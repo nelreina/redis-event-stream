@@ -147,7 +147,7 @@ class StreamHandler {
   }
 
   async subscribe(eventHandler, filterEvents = null) {
-    const { blockMs, consumer, autoAck } = this.options;
+    const { blockMs, consumer } = this.options;
 
     try {
       while (true) {
@@ -182,7 +182,7 @@ class StreamHandler {
             payload,
             ack: () => this.ack(id),
           });
-        } else if (autoAck) {
+        } else {
           await this.ack(id);
         }
       }
