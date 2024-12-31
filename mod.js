@@ -50,7 +50,7 @@ class RedisEventStream {
       aggregateId,
       timestamp: this._getLocalTimestamp(),
       payload: JSON.stringify(data),
-      serviceName: data.serviceName || "",
+      serviceName: this.groupName,
     };
 
     return await this.client.xAdd(this.streamKeyName, "*", eventData);
