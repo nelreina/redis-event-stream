@@ -175,10 +175,12 @@ class StreamHandler {
         // Check if we should process this event
         if (!filterEvents || filterEvents.includes(message.event)) {
           await eventHandler({
-            id,
+            streamId: id,
             event: message.event,
             aggregateId: message.aggregateId,
             timestamp: message.timestamp,
+            serviceName: message.serviceName,
+            mimeType: message.mimeType,
             payload,
             ack: () => this.ack(id),
           });
