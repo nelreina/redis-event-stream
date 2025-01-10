@@ -12,6 +12,7 @@ class RedisEventStream {
       consumer: "consumer-1",
       timeZone: "America/Curacao",
     };
+    console.log("RedisEventStream -> this.options", this.options);
   }
 
   async createStream(options = {}) {
