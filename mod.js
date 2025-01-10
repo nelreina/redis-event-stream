@@ -4,6 +4,7 @@ class RedisEventStream {
     this.logger = options.logger || console;
     this.streamKeyName = streamKeyName;
     this.groupName = groupName;
+    this.options = options;
     this.defaultOptions = {
       blockMs: 30000,
       autoAck: false,
@@ -42,7 +43,7 @@ class RedisEventStream {
   }
 
   async publish(event, aggregateId, data) {
-    const streamOptions = { ...this.defaultOptions, ...options };
+    const streamOptions = { ...this.defaultOptions, ...this.options };
     const { timeZone } = streamOptions;
     if (!this.client.isOpen) {
       await this.client.connect();
