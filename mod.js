@@ -9,6 +9,7 @@ class RedisEventStream {
       autoAck: false,
       startID: "$",
       consumer: "consumer-1",
+      timeZone: "America/Curacao",
     };
   }
 
@@ -41,6 +42,8 @@ class RedisEventStream {
   }
 
   async publish(event, aggregateId, data) {
+    const streamOptions = { ...this.defaultOptions, ...options };
+    const { timeZone } = streamOptions;
     if (!this.client.isOpen) {
       await this.client.connect();
     }
@@ -48,7 +51,7 @@ class RedisEventStream {
     const eventData = {
       event,
       aggregateId,
-      timestamp: this._getLocalTimestamp(),
+      timestamp: this._getLocalTimestamp(timeZone),
       payload: JSON.stringify(data),
       serviceName: this.groupName,
     };
@@ -106,9 +109,9 @@ class RedisEventStream {
     }
   }
 
-  _getLocalTimestamp() {
+  _getLocalTimestamp(timeZone) {
     const options = {
-      timeZone: "America/Curacao",
+      timeZone: timeZone,
       year: "numeric",
       month: "2-digit",
       day: "2-digit",
