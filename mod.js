@@ -59,14 +59,13 @@ class RedisEventStream {
       serviceName: this.groupName,
     };
 
-    return await this.client.xAdd(
+    const resp = await this.client.xAdd(
       this.streamKeyName,
-      "MAXLEN",
-      "~",
-      maxLength,
       "*",
       eventData,
     );
+    await this.client.xTrim(this.streamKeyName, "MAXLEN", maxLength);
+    return resp;
   }
 
   async _createGroup(startID) {
