@@ -11,12 +11,13 @@ class RedisEventStream {
       startID: "$",
       consumer: "consumer-1",
       timeZone: "America/Curacao",
+      maxLength: 10000,
     };
     console.log("RedisEventStream -> this.options", this.options);
   }
 
-  async createStream(options = {}) {
-    const streamOptions = { ...this.defaultOptions, ...options };
+  async createStream() {
+    const streamOptions = { ...this.defaultOptions, ...this.options };
     const { startID, consumer } = streamOptions;
 
     // Create group and consumer
@@ -45,7 +46,7 @@ class RedisEventStream {
 
   async publish(event, aggregateId, data) {
     const streamOptions = { ...this.defaultOptions, ...this.options };
-    const { timeZone } = streamOptions;
+    const { timeZone, maxLength } = streamOptions;
     if (!this.client.isOpen) {
       await this.client.connect();
     }
@@ -58,7 +59,14 @@ class RedisEventStream {
       serviceName: this.groupName,
     };
 
-    return await this.client.xAdd(this.streamKeyName, "*", eventData);
+    return await this.client.xAdd(
+      this.streamKeyName,
+      "MAXLEN",
+      "~",
+      maxLength,
+      "*",
+      eventData,
+    );
   }
 
   async _createGroup(startID) {
