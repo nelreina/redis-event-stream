@@ -3,6 +3,36 @@
  * Provides publish/subscribe capabilities with consumer groups and reliable message processing.
  */
 
+/** Redis stream group information */
+interface RedisGroupInfo {
+  name: string;
+  consumers: number;
+  pending: number;
+  'last-delivered-id': string;
+  'entries-read'?: number;
+  'lag'?: number;
+}
+
+/** Redis stream consumer information */
+interface RedisConsumerInfo {
+  name: string;
+  pending: number;
+  idle: number;
+  'inactive'?: number;
+}
+
+/** Redis stream message data */
+interface RedisStreamMessage {
+  id: string;
+  message: Record<string, string>;
+}
+
+/** Redis stream read response */
+interface RedisStreamResponse {
+  name: string;
+  messages: RedisStreamMessage[];
+}
+
 /** Redis client interface for stream operations */
 interface RedisClient {
   isOpen: boolean;
@@ -11,18 +41,18 @@ interface RedisClient {
   xAdd(key: string, id: string, fields: Record<string, string>): Promise<string>;
   xTrim(key: string, strategy: string, threshold: number): Promise<number>;
   xGroupCreate(key: string, group: string, id: string, options?: { MKSTREAM?: boolean }): Promise<string>;
-  xInfoGroups(key: string): Promise<any[]>;
+  xInfoGroups(key: string): Promise<RedisGroupInfo[]>;
   xGroupCreateConsumer(key: string, group: string, consumer: string): Promise<number>;
-  xInfoConsumers(key: string, group: string): Promise<any[]>;
-  xReadGroup(group: string, consumer: string, streams: { key: string; id: string }, options?: { BLOCK?: number; COUNT?: number }): Promise<any[] | null>;
+  xInfoConsumers(key: string, group: string): Promise<RedisConsumerInfo[]>;
+  xReadGroup(group: string, consumer: string, streams: { key: string; id: string }, options?: { BLOCK?: number; COUNT?: number }): Promise<RedisStreamResponse[] | null>;
   xAck(key: string, group: string, ...ids: string[]): Promise<number>;
 }
 
 /** Logger interface for output */
 interface Logger {
-  info(message: any, ...args: any[]): void;
-  error(message: any, ...args: any[]): void;
-  log?(message: any, ...args: any[]): void;
+  info(message: unknown, ...args: unknown[]): void;
+  error(message: unknown, ...args: unknown[]): void;
+  log?(message: unknown, ...args: unknown[]): void;
 }
 
 /** Configuration options for RedisEventStream */
@@ -55,7 +85,7 @@ interface StreamMessage {
   timestamp: string;
   serviceName: string;
   mimeType?: string;
-  payload: any;
+  payload: unknown;
   ack: () => Promise<number>;
 }
 
@@ -137,11 +167,7 @@ class RedisEventStream {
     const groupOK = await this._createGroup(startID);
     if (!groupOK) return null;
 
-    const consumerOK = await this._createConsumer(
-      this.streamKeyName,
-      this.groupName,
-      consumer,
-    );
+    const consumerOK = await this._createConsumer(consumer);
     if (!consumerOK) return null;
 
     // Create dedicated connection for stream
@@ -165,7 +191,7 @@ class RedisEventStream {
    * @param data - Event payload data (will be JSON stringified)
    * @returns Redis stream message ID
    */
-  async publish(event: string, aggregateId: string, data: any): Promise<string> {
+  async publish(event: string, aggregateId: string, data: unknown): Promise<string> {
     const streamOptions: Required<StreamOptions> = { ...this.defaultOptions, ...this.options };
     const { timeZone, maxLength } = streamOptions;
     if (!this.client.isOpen) {
@@ -183,7 +209,14 @@ class RedisEventStream {
     const resp = await this.client.xAdd(
       this.streamKeyName,
       "*",
-      eventData,
+      {
+        event: eventData.event,
+        aggregateId: eventData.aggregateId,
+        timestamp: eventData.timestamp,
+        payload: eventData.payload,
+        serviceName: eventData.serviceName,
+        ...(eventData.mimeType && { mimeType: eventData.mimeType }),
+      },
     );
     await this.client.xTrim(this.streamKeyName, "MAXLEN", maxLength);
     return resp;
@@ -213,12 +246,12 @@ class RedisEventStream {
       this.logger.info(JSON.stringify(info));
       return true;
     } catch (error) {
-      if (error.message.includes("already exists")) {
+      if (error instanceof Error && error.message.includes("already exists")) {
         const info = await this.client.xInfoGroups(this.streamKeyName);
         this.logger.info(JSON.stringify(info));
         return true;
       } else {
-        this.logger.error(error.message);
+        this.logger.error(error instanceof Error ? error.message : String(error));
         return false;
       }
     }
@@ -247,7 +280,7 @@ class RedisEventStream {
     } catch (error) {
       this.logger.error(
         "LOG:  ~ file: redis-stream.js ~ line 9 ~ error",
-        error.message,
+        error instanceof Error ? error.message : String(error),
       );
       return false;
     }
@@ -360,9 +393,9 @@ class StreamHandler {
         const { id, message } = streamData;
 
         // Parse message payload
-        let payload: any = message.payload;
+        let payload: unknown = message.payload;
         try {
-          payload = JSON.parse(payload);
+          payload = JSON.parse(payload as string);
         } catch (_) {
           // Payload is not JSON
         }
