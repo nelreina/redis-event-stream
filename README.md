@@ -1,22 +1,22 @@
-# Redis Event Stream
+# Redis Event Stream v2
 
-A powerful Redis Streams-based event streaming library for event-driven applications. Built for both Deno and Node.js environments with TypeScript support.
+A powerful, type-safe Redis Streams library for building event-driven applications with advanced features like schema validation, middleware support, and comprehensive observability.
 
 [![JSR](https://jsr.io/badges/@nelreina/redis-stream-event)](https://jsr.io/@nelreina/redis-stream-event)
 [![JSR Score](https://jsr.io/badges/@nelreina/redis-stream-event/score)](https://jsr.io/@nelreina/redis-stream-event)
 
-## Features
+## 🚀 Key Features
 
-- 🚀 **Redis Streams**: Built on Redis Streams for reliable, high-performance event processing
-- 🏘️ **Consumer Groups**: Automatic consumer group and consumer management
-- 🔄 **Reliable Processing**: Support for manual and automatic message acknowledgment
-- 🎯 **Event Filtering**: Subscribe to specific events or all events on a stream
-- ⚡ **Stream Trimming**: Built-in stream management to prevent unbounded growth
-- 🕐 **Timezone Support**: Configurable timezone for event timestamps
-- 📝 **TypeScript**: Full TypeScript support with comprehensive type definitions
-- 🌍 **Universal**: Works with both Deno and Node.js
+- **🔒 Type Safety**: Full TypeScript support with generics and discriminated unions
+- **✅ Schema Validation**: Built-in schema validation with Zod integration
+- **🔄 Middleware Pipeline**: Composable middleware for cross-cutting concerns
+- **📊 Observability**: Metrics collection, health checks, and structured logging
+- **🏗️ Builder Pattern**: Fluent API for easy configuration
+- **🔁 Resilience**: Retry strategies, circuit breakers, and dead letter queues
+- **⚡ Performance**: Connection pooling, batch publishing, and prefetching
+- **🧪 Testing**: In-memory implementation for unit tests
 
-## Installation
+## 📦 Installation
 
 ### Deno
 ```bash
@@ -28,187 +28,324 @@ deno add jsr:@nelreina/redis-stream-event
 npx jsr add @nelreina/redis-stream-event
 ```
 
-## Quick Start
+## 🎯 Quick Start
 
 ```typescript
-import RedisEventStream from "@nelreina/redis-stream-event";
-import { Redis } from "ioredis"; // or your preferred Redis client
+import { RedisEventStream } from "@nelreina/redis-stream-event";
+import { Redis } from "ioredis";
 
-// Initialize Redis client and event stream
-const redis = new Redis();
-const eventStream = new RedisEventStream(redis, "orders", "order-processor");
+// Create event stream with builder pattern
+const eventStream = RedisEventStream.builder(
+  new Redis(),
+  "orders",
+  "order-service"
+)
+  .withLogger(console)
+  .withMetrics(true)
+  .withRetries(3, 1000)
+  .build();
 
-// Publishing events
-await eventStream.publish("order.created", "order123", {
-  id: "order123",
-  amount: 100,
-  currency: "USD",
-  customer: "john.doe@example.com"
+// Type-safe event publishing
+const result = await eventStream.publish(
+  "order.created",
+  "order-123",
+  {
+    orderId: "order-123",
+    amount: 99.99,
+    currency: "USD",
+  },
+  { correlationId: "req-456" }
+);
+
+if (!result.ok) {
+  console.error("Publish failed:", result.error);
+}
+
+// Create consumer with error handling
+const consumerResult = await eventStream.createConsumer(
+  async (message) => {
+    console.log(`Processing ${message.event}:`, message.payload);
+    
+    // Process your business logic
+    await processOrder(message.payload);
+    
+    // Acknowledge message
+    await message.ack();
+  },
+  { concurrency: 5, processingTimeout: 30000 }
+);
+
+if (consumerResult.ok) {
+  await consumerResult.value.start(["order.created", "order.updated"]);
+}
+```
+
+## 📚 Advanced Usage
+
+### Schema Validation with Zod
+
+```typescript
+import { z } from "zod";
+import { createZodSchema } from "@nelreina/redis-stream-event";
+
+// Define schema
+const OrderSchema = z.object({
+  orderId: z.string().uuid(),
+  items: z.array(z.object({
+    productId: z.string(),
+    quantity: z.number().positive(),
+  })),
+  totalAmount: z.number().positive(),
 });
 
-// Consuming events
-const ordersStream = await eventStream.createStream();
-await ordersStream.subscribe(async ({ event, payload, ack }) => {
-  console.log(`Processing ${event}:`, payload);
-  
-  // Process your business logic here
-  await processOrder(payload);
-  
-  // Acknowledge message processing
-  await ack();
-}, ["order.created", "order.updated"]); // Optional: filter specific events
+// Configure with schema
+const eventStream = RedisEventStream.builder(redis, "orders", "service")
+  .withSchema(createZodSchema("order.created", 1, OrderSchema))
+  .build();
+
+// Publishing validates automatically
+const result = await eventStream.publish("order.created", "id", {
+  orderId: "invalid", // Will fail validation
+  items: [],
+  totalAmount: -10,
+});
 ```
 
-## API Reference
-
-### `RedisEventStream`
-
-Main class for creating event streams and publishing events.
-
-#### Constructor
+### Middleware Pipeline
 
 ```typescript
-new RedisEventStream(client: RedisClient, streamKeyName: string, groupName: string, options?: StreamOptions)
+import {
+  createLoggingMiddleware,
+  createMetricsMiddleware,
+  createRetryMiddleware,
+  createTimeoutMiddleware,
+  composeMiddleware,
+} from "@nelreina/redis-stream-event";
+
+const eventStream = RedisEventStream.builder(redis, "events", "service")
+  .withMiddleware(createLoggingMiddleware())
+  .withMiddleware(createTimeoutMiddleware(30000))
+  .withMiddleware(createRetryMiddleware(3, 1000))
+  .withMiddleware(createMetricsMiddleware((metric) => {
+    prometheus.observe(metric);
+  }))
+  .build();
 ```
 
-**Parameters:**
-- `client`: Redis client instance (ioredis or compatible)
-- `streamKeyName`: Name of the Redis stream key
-- `groupName`: Name of the consumer group
-- `options`: Optional configuration options
+### Batch Publishing
+
+```typescript
+const events = [
+  { event: "user.created", aggregateId: "user-1", payload: { name: "Alice" } },
+  { event: "user.created", aggregateId: "user-2", payload: { name: "Bob" } },
+  { event: "user.updated", aggregateId: "user-1", payload: { email: "alice@example.com" } },
+];
+
+const result = await eventStream.publishBatch(events, {
+  maxBatchSize: 100,
+  onError: (error, failedEvents) => {
+    console.error("Batch error:", error);
+    // Handle failed events
+  },
+});
+```
+
+### Health Monitoring
+
+```typescript
+// Get health status
+const health = await eventStream.getHealth();
+console.log("Health:", health);
+// {
+//   status: "healthy" | "degraded" | "unhealthy",
+//   checks: { redis: true, consumer: true, lag: 150 },
+//   timestamp: "2024-01-01T00:00:00.000Z"
+// }
+
+// Get metrics
+const metrics = eventStream.getMetrics();
+console.log("Metrics:", {
+  published: metrics.messagesPublished,
+  consumed: metrics.messagesConsumed,
+  failed: metrics.messagesFailed,
+  lag: metrics.consumerLag,
+});
+```
+
+### Dead Letter Queue
+
+```typescript
+const eventStream = RedisEventStream.builder(redis, "orders", "service")
+  .withDeadLetterStream("orders:dlq")
+  .withRetries(3, 1000)
+  .build();
+
+// Process dead letters
+const dlqStream = RedisEventStream.builder(redis, "orders:dlq", "dlq-processor")
+  .build();
+
+await dlqStream.createConsumer(async (message) => {
+  console.log("Dead letter:", message);
+  // Analyze and potentially fix/retry
+});
+```
+
+## 🏗️ API Reference
+
+### RedisEventStream
+
+#### Static Methods
+
+##### `builder(client, streamKey, consumerGroup)`
+Creates a new builder instance for configuring the event stream.
+
+#### Builder Methods
+
+- `withLogger(logger)` - Set custom logger
+- `withBlockTimeout(ms)` - Set blocking timeout for reads
+- `withAutoAck(enabled)` - Enable automatic acknowledgment
+- `withStartId(id)` - Set starting message ID
+- `withConsumer(name)` - Set consumer name
+- `withTimeZone(tz)` - Set timezone for timestamps
+- `withMaxLength(length)` - Set maximum stream length
+- `withRetries(max, delayMs)` - Configure retry behavior
+- `withDeadLetterStream(key)` - Set dead letter stream
+- `withMetrics(enabled)` - Enable metrics collection
+- `withConnectionPool(size)` - Set connection pool size
+- `withSchema(schema)` - Add event schema
+- `withMiddleware(middleware)` - Add middleware
+
+#### Instance Methods
+
+##### `publish<T>(event, aggregateId, payload, metadata?)`
+Publishes a single event with optional metadata.
+
+**Returns**: `Result<string>` - Success with message ID or error
+
+##### `publishBatch<T>(events, options?)`
+Publishes multiple events in batch.
+
+**Returns**: `Result<string[]>` - Success with message IDs or error
+
+##### `createConsumer<T>(handler, options?)`
+Creates a consumer for processing events.
+
+**Returns**: `Result<StreamConsumer<T>>` - Success with consumer or error
+
+##### `getHealth()`
+Gets the current health status of the stream.
+
+**Returns**: `Promise<HealthStatus>`
+
+##### `getMetrics()`
+Gets current metrics if enabled.
+
+**Returns**: `StreamMetrics | undefined`
+
+### StreamConsumer
 
 #### Methods
 
-##### `publish(event: string, aggregateId: string, data: unknown): Promise<string>`
+##### `start(eventFilter?)`
+Starts consuming events, optionally filtering by event types.
 
-Publishes an event to the Redis stream.
+##### `stop()`
+Gracefully stops the consumer.
 
-**Parameters:**
-- `event`: Event type/name (e.g., "order.created")
-- `aggregateId`: Unique identifier for the aggregate/entity
-- `data`: Event payload data (will be JSON stringified)
+## 🛡️ Error Handling
 
-**Returns:** Promise resolving to the Redis stream message ID
+The library uses a `Result<T, E>` type for error handling:
 
-##### `createStream(): Promise<StreamHandler | null>`
+```typescript
+const result = await eventStream.publish("event", "id", data);
 
-Creates a stream handler for consuming messages.
+if (result.ok) {
+  console.log("Message ID:", result.value);
+} else {
+  console.error("Error:", result.error);
+  
+  // Specific error types
+  if (result.error instanceof ValidationError) {
+    console.error("Validation errors:", result.error.errors);
+  }
+}
+```
 
-**Returns:** Promise resolving to a StreamHandler instance or null if creation failed
+### Error Types
 
-### `StreamHandler`
+- `ConnectionError` - Redis connection failures
+- `ConsumerGroupError` - Consumer group operations
+- `PublishError` - Publishing failures
+- `ProcessingError` - Message processing errors
+- `ValidationError` - Schema validation failures
+- `TimeoutError` - Operation timeouts
+- `MaxRetriesExceededError` - Retry limit reached
 
-Handles stream consumption and message processing.
+## 🧪 Testing
 
-##### `subscribe(eventHandler: EventHandler, filterEvents?: string[]): Promise<void>`
+The library includes utilities for testing:
 
-Subscribes to events from the Redis stream with optional event filtering.
+```typescript
+import { InMemoryRedisClient } from "@nelreina/redis-stream-event/testing";
 
-**Parameters:**
-- `eventHandler`: Async function to handle received events
-- `filterEvents`: Optional array of event types to process (processes all events if not provided)
+const mockClient = new InMemoryRedisClient();
+const eventStream = RedisEventStream.builder(
+  mockClient,
+  "test-stream",
+  "test-group"
+).build();
 
-##### `ack(messageId: string): Promise<number>`
+// Write your tests
+const result = await eventStream.publish("test.event", "id", { data: "test" });
+expect(result.ok).toBe(true);
+```
 
-Manually acknowledges a message as processed.
+## 📊 Metrics Export
 
-## Configuration Options
+Export metrics in Prometheus format:
+
+```typescript
+const collector = eventStream.getMetrics();
+const prometheusMetrics = collector.toPrometheusFormat("app_events");
+```
+
+## 🔧 Configuration Reference
+
+### StreamOptions
 
 ```typescript
 interface StreamOptions {
-  logger?: Logger;          // Custom logger (default: console)
-  blockMs?: number;         // Blocking timeout for stream reads (default: 30000)
-  autoAck?: boolean;        // Enable automatic acknowledgment (default: false)
-  startID?: string;         // Starting message ID for consumption (default: "$")
-  consumer?: string;        // Consumer name (default: "consumer-1")
-  timeZone?: string;        // Timezone for timestamps (default: "America/Curacao")
-  maxLength?: number;       // Stream trimming limit (default: 10000)
-  initLog?: boolean;        // Enable initialization logging (default: true)
+  logger?: Logger;              // Custom logger (default: console)
+  blockMs?: number;            // Block timeout in ms (default: 30000)
+  autoAck?: boolean;           // Auto acknowledge (default: false)
+  startID?: string;            // Start consuming from (default: "$")
+  consumer?: string;           // Consumer name (default: "consumer-1")
+  timeZone?: string;           // Timezone (default: "UTC")
+  maxLength?: number;          // Max stream length (default: 10000)
+  initLog?: boolean;           // Log initialization (default: false)
+  maxRetries?: number;         // Max retry attempts (default: 3)
+  retryDelayMs?: number;       // Retry delay in ms (default: 1000)
+  deadLetterStream?: string;   // Dead letter stream key
+  enableMetrics?: boolean;     // Enable metrics (default: false)
+  connectionPoolSize?: number; // Connection pool size (default: 1)
+  prefetchCount?: number;      // Messages to prefetch (default: 1)
 }
 ```
 
-## Event Message Structure
-
-Events received by subscribers have the following structure:
+### ConsumerOptions
 
 ```typescript
-interface StreamMessage {
-  streamId: string;         // Redis stream message ID
-  event: string;            // Event type
-  aggregateId: string;      // Aggregate identifier
-  timestamp: string;        // Event timestamp
-  serviceName: string;      // Name of the publishing service
-  mimeType?: string;        // Optional MIME type
-  payload: unknown;         // Event payload (parsed from JSON)
-  ack: () => Promise<number>; // Acknowledgment function
+interface ConsumerOptions extends StreamOptions {
+  concurrency?: number;        // Concurrent message processing
+  processingTimeout?: number;  // Processing timeout in ms
+  errorHandler?: (error, message) => Promise<void>;
 }
 ```
 
-## Advanced Usage
-
-### Event Filtering
-
-Subscribe to specific events only:
-
-```typescript
-await ordersStream.subscribe(async ({ event, payload, ack }) => {
-  // This handler only receives order.created and order.updated events
-  console.log(`Processing ${event}:`, payload);
-  await ack();
-}, ["order.created", "order.updated"]);
-```
-
-### Custom Configuration
-
-```typescript
-const eventStream = new RedisEventStream(redis, "events", "my-service", {
-  blockMs: 5000,           // 5 second blocking timeout
-  maxLength: 50000,        // Keep up to 50,000 messages
-  timeZone: "UTC",         // Use UTC timestamps
-  consumer: "worker-1",    // Custom consumer name
-  logger: myCustomLogger   // Custom logger
-});
-```
-
-### Error Handling
-
-```typescript
-try {
-  const ordersStream = await eventStream.createStream();
-  await ordersStream.subscribe(async ({ event, payload, ack }) => {
-    try {
-      await processEvent(event, payload);
-      await ack();
-    } catch (error) {
-      console.error(`Failed to process event ${event}:`, error);
-      // Don't acknowledge failed messages for retry
-    }
-  });
-} catch (error) {
-  console.error("Stream subscription failed:", error);
-}
-```
-
-## Redis Client Compatibility
-
-This library works with any Redis client that implements the required interface:
-
-- ✅ [ioredis](https://github.com/redis/ioredis)
-- ✅ [node-redis](https://github.com/redis/node-redis)
-- ✅ Any client implementing the RedisClient interface
-
-## Best Practices
-
-1. **Always acknowledge messages**: Call `ack()` after successful processing to prevent message redelivery
-2. **Handle errors gracefully**: Don't acknowledge messages that failed to process
-3. **Use event filtering**: Subscribe only to events your service needs to process
-4. **Monitor stream size**: Configure appropriate `maxLength` for your use case
-5. **Use meaningful event names**: Follow a consistent naming convention (e.g., "entity.action")
-
-## Contributing
+## 🤝 Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
 
-## License
+## 📄 License
 
 MIT © Nelson Reina
