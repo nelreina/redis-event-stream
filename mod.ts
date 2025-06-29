@@ -75,6 +75,7 @@ interface EventData {
   payload: string;
   serviceName: string;
   mimeType?: string;
+  headers: Record<string, string>;
 }
 
 /** Message structure received from Redis stream */
@@ -86,6 +87,7 @@ interface StreamMessage {
   serviceName: string;
   mimeType?: string;
   payload: unknown;
+  headers: Record<string, string>;
   ack: () => Promise<number>;
 }
 
@@ -189,9 +191,10 @@ class RedisEventStream {
    * @param event - Event type/name
    * @param aggregateId - Unique identifier for the aggregate/entity
    * @param data - Event payload data (will be JSON stringified)
+   * @param headers - Optional headers as key-value pairs
    * @returns Redis stream message ID
    */
-  async publish(event: string, aggregateId: string, data: unknown): Promise<string> {
+  async publish(event: string, aggregateId: string, data: unknown, headers: Record<string, string>): Promise<string> {
     const streamOptions: Required<StreamOptions> = { ...this.defaultOptions, ...this.options };
     const { timeZone, maxLength } = streamOptions;
     if (!this.client.isOpen) {
@@ -204,6 +207,7 @@ class RedisEventStream {
       timestamp: this._getLocalTimestamp(timeZone),
       payload: JSON.stringify(data),
       serviceName: this.groupName,
+      headers,
     };
 
     const resp = await this.client.xAdd(
@@ -216,6 +220,7 @@ class RedisEventStream {
         payload: eventData.payload,
         serviceName: eventData.serviceName,
         ...(eventData.mimeType && { mimeType: eventData.mimeType }),
+        headers: JSON.stringify(eventData.headers),
       },
     );
     await this.client.xTrim(this.streamKeyName, "MAXLEN", maxLength);
@@ -400,6 +405,16 @@ class StreamHandler {
           // Payload is not JSON
         }
 
+        // Parse headers
+        let headers: Record<string, string> = {};
+        if (message.headers) {
+          try {
+            headers = JSON.parse(message.headers as string);
+          } catch (_) {
+            // Headers are not JSON, use empty object
+          }
+        }
+
         // Check if we should process this event
         if (!filterEvents || filterEvents.includes(message.event)) {
           const streamMessage: StreamMessage = {
@@ -410,6 +425,7 @@ class StreamHandler {
             serviceName: message.serviceName,
             mimeType: message.mimeType,
             payload,
+            headers,
             ack: () => this.ack(id),
           };
           await eventHandler(streamMessage);

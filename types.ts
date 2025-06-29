@@ -94,6 +94,7 @@ export interface Event<T = unknown> {
   serviceName: string;
   mimeType?: string;
   metadata?: EventMetadata;
+  headers: Record<string, string>;
 }
 
 /** Message structure received from Redis stream with generic payload */

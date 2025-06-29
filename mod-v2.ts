@@ -203,6 +203,7 @@ export class RedisEventStream {
     event: string,
     aggregateId: string,
     payload: T,
+    headers: Record<string, string>,
     metadata?: EventMetadata
   ): Promise<Result<string>> {
     try {
@@ -222,6 +223,7 @@ export class RedisEventStream {
         timestamp: this.getTimestamp(),
         payload,
         serviceName: this.consumerGroup,
+        headers,
         metadata: {
           ...metadata,
           version: this.schemaRegistry.getVersion(event),
@@ -259,6 +261,7 @@ export class RedisEventStream {
       event: string;
       aggregateId: string;
       payload: T;
+      headers: Record<string, string>;
       metadata?: EventMetadata;
     }>,
     options?: BatchPublishOptions
@@ -279,6 +282,7 @@ export class RedisEventStream {
               event.event,
               event.aggregateId,
               event.payload,
+              event.headers,
               event.metadata
             );
             
@@ -470,6 +474,7 @@ export class RedisEventStream {
       serviceName: event.serviceName,
       ...(event.metadata && { metadata: JSON.stringify(event.metadata) }),
       ...(event.mimeType && { mimeType: event.mimeType }),
+      headers: JSON.stringify(event.headers),
     };
   }
 }
@@ -588,11 +593,15 @@ export class StreamConsumer<T = unknown> {
     
     let payload: T;
     let metadata: EventMetadata | undefined;
+    let headers: Record<string, string> = {};
 
     try {
       payload = JSON.parse(data.payload);
       if (data.metadata) {
         metadata = JSON.parse(data.metadata);
+      }
+      if (data.headers) {
+        headers = JSON.parse(data.headers);
       }
     } catch (error) {
       throw new ProcessingError(
@@ -612,6 +621,7 @@ export class StreamConsumer<T = unknown> {
       mimeType: data.mimeType,
       payload,
       metadata,
+      headers,
       ack: async () => {
         const result = await this.client.xAck(this.streamKey, this.consumerGroup, id);
         this.metrics?.recordAck(data.event);
