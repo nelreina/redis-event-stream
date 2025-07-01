@@ -44,7 +44,7 @@ interface RedisClient {
   xInfoGroups(key: string): Promise<RedisGroupInfo[]>;
   xGroupCreateConsumer(key: string, group: string, consumer: string): Promise<number>;
   xInfoConsumers(key: string, group: string): Promise<RedisConsumerInfo[]>;
-  xReadGroup(group: string, consumer: string, streams: { key: string; id: string }, options?: { BLOCK?: number; COUNT?: number }): Promise<RedisStreamResponse[] | null>;
+  xReadGroup(group: string, consumer: string, streams: { key: string; id: string } | Array<{ key: string; id: string }>, options?: { BLOCK?: number; COUNT?: number }): Promise<RedisStreamResponse[] | null>;
   xAck(key: string, group: string, ...ids: string[]): Promise<number>;
 }
 
@@ -121,7 +121,7 @@ type EventHandler = (message: StreamMessage) => Promise<void>;
 class RedisEventStream {
   private client: RedisClient;
   private logger: Logger;
-  private streamKeyName: string;
+  private streamKeyNames: string[];
   private groupName: string;
   private options: StreamOptions;
   private defaultOptions: Required<StreamOptions>;
@@ -130,14 +130,14 @@ class RedisEventStream {
    * Creates a new RedisEventStream instance.
    * 
    * @param client - Redis client instance (ioredis or similar)
-   * @param streamKeyName - Name of the Redis stream key
+   * @param streamKeyName - Name of the Redis stream key or array of stream keys
    * @param groupName - Name of the consumer group
    * @param options - Configuration options
    */
-  constructor(client: RedisClient, streamKeyName: string, groupName: string, options: StreamOptions = {}) {
+  constructor(client: RedisClient, streamKeyName: string | string[], groupName: string, options: StreamOptions = {}) {
     this.client = client;
     this.logger = options.logger || console;
-    this.streamKeyName = streamKeyName;
+    this.streamKeyNames = Array.isArray(streamKeyName) ? streamKeyName : [streamKeyName];
     this.groupName = groupName;
     this.options = options;
     this.defaultOptions = {
@@ -156,21 +156,29 @@ class RedisEventStream {
   }
 
   /**
-   * Creates a stream handler for consuming messages from the Redis stream.
+   * Creates a stream handler for consuming messages from the Redis stream(s).
    * Sets up consumer group and consumer if they don't exist.
    * 
+   * @param streamKeys - Optional specific stream keys to consume from (defaults to all configured streams)
    * @returns Stream handler instance or null if creation failed
    */
-  async createStream(): Promise<StreamHandler | null> {
+  async createStream(streamKeys?: string | string[]): Promise<StreamHandler | null> {
     const streamOptions: Required<StreamOptions> = { ...this.defaultOptions, ...this.options };
     const { startID, consumer } = streamOptions;
 
-    // Create group and consumer
-    const groupOK = await this._createGroup(startID);
-    if (!groupOK) return null;
+    // Determine which streams to use
+    const keysToUse = streamKeys 
+      ? (Array.isArray(streamKeys) ? streamKeys : [streamKeys])
+      : this.streamKeyNames;
 
-    const consumerOK = await this._createConsumer(consumer);
-    if (!consumerOK) return null;
+    // Create groups and consumers for all streams
+    for (const streamKey of keysToUse) {
+      const groupOK = await this._createGroup(streamKey, startID);
+      if (!groupOK) return null;
+
+      const consumerOK = await this._createConsumer(streamKey, consumer);
+      if (!consumerOK) return null;
+    }
 
     // Create dedicated connection for stream
     const streamClient = this.client.duplicate();
@@ -178,7 +186,7 @@ class RedisEventStream {
 
     return new StreamHandler(
       streamClient,
-      this.streamKeyName,
+      keysToUse,
       this.groupName,
       streamOptions,
       this.logger,
@@ -192,14 +200,18 @@ class RedisEventStream {
    * @param aggregateId - Unique identifier for the aggregate/entity
    * @param data - Event payload data (will be JSON stringified)
    * @param headers - Optional headers as key-value pairs
+   * @param streamKey - Optional specific stream key to publish to (defaults to first configured stream)
    * @returns Redis stream message ID
    */
-  async publish(event: string, aggregateId: string, data: unknown, headers: Record<string, string>): Promise<string> {
+  async publish(event: string, aggregateId: string, data: unknown, headers: Record<string, string>, streamKey?: string): Promise<string> {
     const streamOptions: Required<StreamOptions> = { ...this.defaultOptions, ...this.options };
     const { timeZone, maxLength } = streamOptions;
     if (!this.client.isOpen) {
       await this.client.connect();
     }
+
+    // Use specified stream key or default to first configured stream
+    const targetStreamKey = streamKey || this.streamKeyNames[0];
 
     const eventData: EventData = {
       event,
@@ -211,7 +223,7 @@ class RedisEventStream {
     };
 
     const resp = await this.client.xAdd(
-      this.streamKeyName,
+      targetStreamKey,
       "*",
       {
         event: eventData.event,
@@ -223,7 +235,7 @@ class RedisEventStream {
         headers: JSON.stringify(eventData.headers),
       },
     );
-    await this.client.xTrim(this.streamKeyName, "MAXLEN", maxLength);
+    await this.client.xTrim(targetStreamKey, "MAXLEN", maxLength);
     return resp;
   }
 
@@ -231,13 +243,14 @@ class RedisEventStream {
    * Creates a consumer group for the stream if it doesn't exist.
    * 
    * @private
+   * @param streamKey - Stream key to create group for
    * @param startID - Starting message ID for the group
    * @returns True if group was created or already exists
    */
-  private async _createGroup(startID: string): Promise<boolean> {
+  private async _createGroup(streamKey: string, startID: string): Promise<boolean> {
     try {
       await this.client.xGroupCreate(
-        this.streamKeyName,
+        streamKey,
         this.groupName,
         startID,
         {
@@ -245,14 +258,14 @@ class RedisEventStream {
         },
       );
       this.logger.info(
-        `${this.groupName} created for key: ${this.streamKeyName}!`,
+        `${this.groupName} created for key: ${streamKey}!`,
       );
-      const info = await this.client.xInfoGroups(this.streamKeyName);
+      const info = await this.client.xInfoGroups(streamKey);
       this.logger.info(JSON.stringify(info));
       return true;
     } catch (error) {
       if (error instanceof Error && error.message.includes("already exists")) {
-        const info = await this.client.xInfoGroups(this.streamKeyName);
+        const info = await this.client.xInfoGroups(streamKey);
         this.logger.info(JSON.stringify(info));
         return true;
       } else {
@@ -266,18 +279,19 @@ class RedisEventStream {
    * Creates a consumer within the consumer group.
    * 
    * @private
+   * @param streamKey - Stream key to create consumer for
    * @param consumer - Consumer name
    * @returns True if consumer was created successfully
    */
-  private async _createConsumer(consumer: string): Promise<boolean> {
+  private async _createConsumer(streamKey: string, consumer: string): Promise<boolean> {
     try {
       await this.client.xGroupCreateConsumer(
-        this.streamKeyName,
+        streamKey,
         this.groupName,
         consumer,
       );
       const info = await this.client.xInfoConsumers(
-        this.streamKeyName,
+        streamKey,
         this.groupName,
       );
       this.logger.info(JSON.stringify(info));
@@ -322,12 +336,12 @@ class RedisEventStream {
 }
 
 /**
- * Handles stream consumption and message processing for a Redis Event Stream.
- * Manages message acknowledgment and event filtering.
+ * Handles stream consumption and message processing for Redis Event Streams.
+ * Manages message acknowledgment and event filtering for multiple streams.
  */
 class StreamHandler {
   private client: RedisClient;
-  private streamKey: string;
+  private streamKeys: string[];
   private groupName: string;
   private options: Required<StreamOptions>;
   private logger: Logger;
@@ -336,14 +350,14 @@ class StreamHandler {
    * Creates a new StreamHandler instance.
    * 
    * @param client - Dedicated Redis client for streaming
-   * @param streamKey - Redis stream key name
+   * @param streamKeys - Array of Redis stream key names
    * @param groupName - Consumer group name
    * @param options - Stream configuration options
    * @param logger - Logger instance
    */
-  constructor(client: RedisClient, streamKey: string, groupName: string, options: Required<StreamOptions>, logger: Logger) {
+  constructor(client: RedisClient, streamKeys: string[], groupName: string, options: Required<StreamOptions>, logger: Logger) {
     this.client = client;
-    this.streamKey = streamKey;
+    this.streamKeys = streamKeys;
     this.groupName = groupName;
     this.options = options;
     this.logger = logger;
@@ -352,19 +366,20 @@ class StreamHandler {
   /**
    * Acknowledges a message as processed.
    * 
+   * @param streamKey - Stream key the message belongs to
    * @param messageId - Redis stream message ID to acknowledge
    * @returns Number of messages acknowledged
    */
-  async ack(messageId: string): Promise<number> {
+  async ack(streamKey: string, messageId: string): Promise<number> {
     return await this.client.xAck(
-      this.streamKey,
+      streamKey,
       this.groupName,
       messageId,
     );
   }
 
   /**
-   * Subscribes to events from the Redis stream with optional event filtering.
+   * Subscribes to events from multiple Redis streams with optional event filtering.
    * Continuously processes messages until an error occurs or the process is terminated.
    * 
    * @param eventHandler - Async function to handle received events
@@ -384,53 +399,61 @@ class StreamHandler {
 
     try {
       while (true) {
+        // Build streams array for xReadGroup with multiple streams
+        const streams = this.streamKeys.map(key => ({ key, id: ">" }));
+        
         const messages = await this.client.xReadGroup(
           this.groupName,
           consumer,
-          { key: this.streamKey, id: ">" },
+          streams,
           { BLOCK: blockMs, COUNT: 1 },
         );
 
         if (!messages) continue;
 
-        const [msg] = messages;
-        const [streamData] = msg.messages;
-        const { id, message } = streamData;
+        // Process messages from all streams
+        for (const streamResponse of messages) {
+          const streamKey = streamResponse.name;
+          
+          for (const streamData of streamResponse.messages) {
+            const { id, message } = streamData;
 
-        // Parse message payload
-        let payload: unknown = message.payload;
-        try {
-          payload = JSON.parse(payload as string);
-        } catch (_) {
-          // Payload is not JSON
-        }
+            // Parse message payload
+            let payload: unknown = message.payload;
+            try {
+              payload = JSON.parse(payload as string);
+            } catch (_) {
+              // Payload is not JSON
+            }
 
-        // Parse headers
-        let headers: Record<string, string> = {};
-        if (message.headers) {
-          try {
-            headers = JSON.parse(message.headers as string);
-          } catch (_) {
-            // Headers are not JSON, use empty object
+            // Parse headers
+            let headers: Record<string, string> = {};
+            if (message.headers) {
+              try {
+                headers = JSON.parse(message.headers as string);
+              } catch (_) {
+                // Headers are not JSON, use empty object
+              }
+            }
+
+            // Check if we should process this event
+            if (!filterEvents || filterEvents.includes(message.event)) {
+              const streamMessage: StreamMessage = {
+                streamId: id,
+                event: message.event,
+                aggregateId: message.aggregateId,
+                timestamp: message.timestamp,
+                serviceName: message.serviceName,
+                mimeType: message.mimeType,
+                payload,
+                headers,
+                ack: () => this.ack(streamKey, id),
+              };
+              await eventHandler(streamMessage);
+            } else {
+              await this.ack(streamKey, id);
+            }
           }
-        }
-
-        // Check if we should process this event
-        if (!filterEvents || filterEvents.includes(message.event)) {
-          const streamMessage: StreamMessage = {
-            streamId: id,
-            event: message.event,
-            aggregateId: message.aggregateId,
-            timestamp: message.timestamp,
-            serviceName: message.serviceName,
-            mimeType: message.mimeType,
-            payload,
-            headers,
-            ack: () => this.ack(id),
-          };
-          await eventHandler(streamMessage);
-        } else {
-          await this.ack(id);
         }
       }
     } catch (error) {
