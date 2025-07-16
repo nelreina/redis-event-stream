@@ -261,12 +261,12 @@ class RedisEventStream {
         `${this.groupName} created for key: ${streamKey}!`,
       );
       const info = await this.client.xInfoGroups(streamKey);
-      this.logger.info(JSON.stringify(info));
+      this.logger.info(this._formatGroupInfo(info));
       return true;
     } catch (error) {
       if (error instanceof Error && error.message.includes("already exists")) {
         const info = await this.client.xInfoGroups(streamKey);
-        this.logger.info(JSON.stringify(info));
+        this.logger.info(this._formatGroupInfo(info));
         return true;
       } else {
         this.logger.error(error instanceof Error ? error.message : String(error));
@@ -294,7 +294,7 @@ class RedisEventStream {
         streamKey,
         this.groupName,
       );
-      this.logger.info(JSON.stringify(info));
+      this.logger.info(this._formatConsumerInfo(info));
       return true;
     } catch (error) {
       this.logger.error(
@@ -303,6 +303,46 @@ class RedisEventStream {
       );
       return false;
     }
+  }
+
+  /**
+   * Formats consumer info to show only name and pending messages.
+   * 
+   * @private
+   * @param consumers - Array of consumer information
+   * @returns Formatted string for logging
+   */
+  private _formatConsumerInfo(consumers: RedisConsumerInfo[]): string {
+    if (!consumers || consumers.length === 0) {
+      return "No consumers found";
+    }
+    
+    const header = "Consumer Info:";
+    const formattedConsumers = consumers
+      .map(consumer => `  - ${consumer.name}: ${consumer.pending} pending`)
+      .join("\n");
+    
+    return `${header}\n${formattedConsumers}`;
+  }
+
+  /**
+   * Formats group info to show only name and pending messages.
+   * 
+   * @private
+   * @param groups - Array of group information
+   * @returns Formatted string for logging
+   */
+  private _formatGroupInfo(groups: RedisGroupInfo[]): string {
+    if (!groups || groups.length === 0) {
+      return "No groups found";
+    }
+    
+    const header = "Group Info:";
+    const formattedGroups = groups
+      .map(group => `  - ${group.name}: ${group.pending} pending`)
+      .join("\n");
+    
+    return `${header}\n${formattedGroups}`;
   }
 
   /**
