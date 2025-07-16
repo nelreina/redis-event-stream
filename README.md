@@ -1,4 +1,4 @@
-# Redis Event Stream v2
+# Redis Event Stream v2 (v0.8.5)
 
 A powerful, type-safe Redis Streams library for building event-driven applications with advanced features like schema validation, middleware support, and comprehensive observability.
 
