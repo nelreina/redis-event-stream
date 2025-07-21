@@ -261,12 +261,12 @@ class RedisEventStream {
         `${this.groupName} created for key: ${streamKey}!`,
       );
       const info = await this.client.xInfoGroups(streamKey);
-      this.logger.info(this._formatGroupInfo(info));
+      this.logger.info(this._formatGroupInfoWithStream(info, streamKey));
       return true;
     } catch (error) {
       if (error instanceof Error && error.message.includes("already exists")) {
         const info = await this.client.xInfoGroups(streamKey);
-        this.logger.info(this._formatGroupInfo(info));
+        this.logger.info(this._formatGroupInfoWithStream(info, streamKey  ));
         return true;
       } else {
         this.logger.error(error instanceof Error ? error.message : String(error));
@@ -294,7 +294,7 @@ class RedisEventStream {
         streamKey,
         this.groupName,
       );
-      this.logger.info(this._formatConsumerInfo(info));
+      this.logger.info(this._formatConsumerInfoWithStream(info, streamKey));
       return true;
     } catch (error) {
       this.logger.error(
@@ -312,18 +312,19 @@ class RedisEventStream {
    * @param consumers - Array of consumer information
    * @returns Formatted string for logging
    */
-  private _formatConsumerInfo(consumers: RedisConsumerInfo[]): string {
-    if (!consumers || consumers.length === 0) {
-      return "No consumers found";
-    }
-    
-    const header = "Consumer Info:";
-    const formattedConsumers = consumers
-      .map(consumer => `  - ${consumer.name}: ${consumer.pending} pending`)
-      .join("\n");
-    
-    return `${header}\n${formattedConsumers}`;
+  /**
+   * Formats consumer info to show only name and pending messages, and logs the count of consumers on the given stream key.
+   * 
+   * @private
+   * @param consumers - Array of consumer information
+   * @param streamKey - Stream key associated with the consumers
+   * @returns Formatted string for logging
+   */
+  private _formatConsumerInfoWithStream(consumers: RedisConsumerInfo[], streamKey: string): string {
+    const count = consumers ? consumers.length : 0;
+    return `${count} consumers on ${streamKey}`;
   }
+
 
   /**
    * Formats group info to show only name and pending messages.
@@ -332,17 +333,9 @@ class RedisEventStream {
    * @param groups - Array of group information
    * @returns Formatted string for logging
    */
-  private _formatGroupInfo(groups: RedisGroupInfo[]): string {
-    if (!groups || groups.length === 0) {
-      return "No groups found";
-    }
-    
-    const header = "Group Info:";
-    const formattedGroups = groups
-      .map(group => `  - ${group.name}: ${group.pending} pending`)
-      .join("\n");
-    
-    return `${header}\n${formattedGroups}`;
+  private _formatGroupInfoWithStream(groups: RedisGroupInfo[], streamKey: string): string {
+    const count = groups ? groups.length : 0;
+    return `${count} groups on ${streamKey}`;
   }
 
   /**
