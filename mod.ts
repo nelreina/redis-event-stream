@@ -213,11 +213,22 @@ class RedisEventStream {
     // Use specified stream key or default to first configured stream
     const targetStreamKey = streamKey || this.streamKeyNames[0];
 
+    // Check payload is an json object, try to parse it if it's a string do not stringify it
+    // Add to payload to stream as is if it's not a json object
+    let payload: string | unknown = data;
+    if (typeof payload === "string") {
+      try {
+        payload = JSON.parse(payload);
+      } catch (error) {
+        payload = data;
+      }
+    }
+
     const eventData: EventData = {
       event,
       aggregateId,
       timestamp: this._getLocalTimestamp(timeZone),
-      payload: JSON.stringify(data),
+      payload: typeof payload === "object" ? JSON.stringify(payload) : payload as string,
       serviceName: this.groupName,
       headers,
     };
