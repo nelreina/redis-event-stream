@@ -1,4 +1,4 @@
-# Redis Event Stream (v0.9.0)
+# Redis Event Stream (v0.10.2)
 
 A powerful, production-ready Redis Streams library for building event-driven applications with reliable message processing, consumer groups, and comprehensive health monitoring.
 
