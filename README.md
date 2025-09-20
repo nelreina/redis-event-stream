@@ -1,20 +1,20 @@
-# Redis Event Stream v2 (v0.8.5)
+# Redis Event Stream (v0.9.0)
 
-A powerful, type-safe Redis Streams library for building event-driven applications with advanced features like schema validation, middleware support, and comprehensive observability.
+A powerful, production-ready Redis Streams library for building event-driven applications with reliable message processing, consumer groups, and comprehensive health monitoring.
 
 [![JSR](https://jsr.io/badges/@nelreina/redis-stream-event)](https://jsr.io/@nelreina/redis-stream-event)
 [![JSR Score](https://jsr.io/badges/@nelreina/redis-stream-event/score)](https://jsr.io/@nelreina/redis-stream-event)
 
 ## 🚀 Key Features
 
-- **🔒 Type Safety**: Full TypeScript support with generics and discriminated unions
-- **✅ Schema Validation**: Built-in schema validation with Zod integration
-- **🔄 Middleware Pipeline**: Composable middleware for cross-cutting concerns
-- **📊 Observability**: Metrics collection, health checks, and structured logging
-- **🏗️ Builder Pattern**: Fluent API for easy configuration
-- **🔁 Resilience**: Retry strategies, circuit breakers, and dead letter queues
-- **⚡ Performance**: Connection pooling, batch publishing, and prefetching
-- **🧪 Testing**: In-memory implementation for unit tests
+- **🔒 Production Ready**: Battle-tested Redis Streams implementation
+- **👥 Consumer Groups**: Reliable message processing with automatic group/consumer creation
+- **🔄 Multi-Stream Support**: Handle multiple streams with a single instance
+- **📊 Health Monitoring**: Built-in health checks for production deployments
+- **⚡ High Performance**: Configurable blocking reads, stream trimming, and batch processing
+- **🛡️ Error Resilient**: Robust error handling and recovery mechanisms
+- **🧪 Testing Friendly**: Works with any Redis-compatible client (ioredis, node-redis, etc.)
+- **🌍 Timezone Support**: Configurable timestamp formatting
 
 ## 📦 Installation
 
@@ -31,126 +31,157 @@ npx jsr add @nelreina/redis-stream-event
 ## 🎯 Quick Start
 
 ```typescript
-import { RedisEventStream } from "@nelreina/redis-stream-event";
 import { Redis } from "ioredis";
+import RedisEventStream from "@nelreina/redis-stream-event";
 
-// Create event stream with builder pattern
-const eventStream = RedisEventStream.builder(
-  new Redis(),
-  "orders",
-  "order-service"
-)
-  .withLogger(console)
-  .withMetrics(true)
-  .withRetries(3, 1000)
-  .build();
+// Create Redis client
+const redis = new Redis({
+  host: "localhost",
+  port: 6379,
+});
 
-// Type-safe event publishing
-const result = await eventStream.publish(
+// Create event stream
+const eventStream = new RedisEventStream(
+  redis,
+  "orders",           // Stream name
+  "order-service",    // Consumer group
+  {
+    consumer: "worker-1",
+    blockMs: 30000,
+    autoAck: false,
+    maxLength: 10000,
+  }
+);
+
+// Publisher: Send events to the stream
+await eventStream.publish(
   "order.created",
   "order-123",
   {
     orderId: "order-123",
+    customerId: "cust-456",
     amount: 99.99,
-    currency: "USD",
+    items: [{ sku: "ITEM-1", quantity: 2 }],
   },
-  { correlationId: "req-456" }
+  { correlationId: "req-789" }  // headers
 );
 
-if (!result.ok) {
-  console.error("Publish failed:", result.error);
-}
+// Consumer: Process events from the stream
+const streamHandler = await eventStream.createStream();
 
-// Create consumer with error handling
-const consumerResult = await eventStream.createConsumer(
-  async (message) => {
-    console.log(`Processing ${message.event}:`, message.payload);
-    
-    // Process your business logic
+await streamHandler.subscribe(async (message) => {
+  console.log(`Processing ${message.event} for ${message.aggregateId}`);
+  console.log("Payload:", message.payload);
+  console.log("Headers:", message.headers);
+
+  try {
+    // Your business logic here
     await processOrder(message.payload);
-    
-    // Acknowledge message
-    await message.ack();
-  },
-  { concurrency: 5, processingTimeout: 30000 }
-);
 
-if (consumerResult.ok) {
-  await consumerResult.value.start(["order.created", "order.updated"]);
-}
+    // Acknowledge successful processing
+    await message.ack();
+  } catch (error) {
+    console.error("Processing failed:", error);
+    // Don't ack - message will remain in pending state
+  }
+}, ["order.created", "order.updated"]); // Optional event filter
 ```
 
 ## 📚 Advanced Usage
 
-### Schema Validation with Zod
+### Multi-Stream Processing
 
 ```typescript
-import { z } from "zod";
-import { createZodSchema } from "@nelreina/redis-stream-event";
+// Handle multiple streams
+const eventStream = new RedisEventStream(
+  redis,
+  ["orders", "inventory", "payments"],  // Multiple streams
+  "commerce-service"
+);
 
-// Define schema
-const OrderSchema = z.object({
-  orderId: z.string().uuid(),
-  items: z.array(z.object({
-    productId: z.string(),
-    quantity: z.number().positive(),
-  })),
-  totalAmount: z.number().positive(),
-});
+const handler = await eventStream.createStream();
 
-// Configure with schema
-const eventStream = RedisEventStream.builder(redis, "orders", "service")
-  .withSchema(createZodSchema("order.created", 1, OrderSchema))
-  .build();
-
-// Publishing validates automatically
-const result = await eventStream.publish("order.created", "id", {
-  orderId: "invalid", // Will fail validation
-  items: [],
-  totalAmount: -10,
+// Process events from all streams
+await handler.subscribe(async (message) => {
+  switch (message.event) {
+    case "order.created":
+      await handleOrderCreated(message);
+      break;
+    case "inventory.updated":
+      await handleInventoryUpdate(message);
+      break;
+    case "payment.processed":
+      await handlePaymentProcessed(message);
+      break;
+  }
+  await message.ack();
 });
 ```
 
-### Middleware Pipeline
+### Custom Configuration
 
 ```typescript
-import {
-  createLoggingMiddleware,
-  createMetricsMiddleware,
-  createRetryMiddleware,
-  createTimeoutMiddleware,
-  composeMiddleware,
-} from "@nelreina/redis-stream-event";
-
-const eventStream = RedisEventStream.builder(redis, "events", "service")
-  .withMiddleware(createLoggingMiddleware())
-  .withMiddleware(createTimeoutMiddleware(30000))
-  .withMiddleware(createRetryMiddleware(3, 1000))
-  .withMiddleware(createMetricsMiddleware((metric) => {
-    prometheus.observe(metric);
-  }))
-  .build();
+const eventStream = new RedisEventStream(redis, "events", "service", {
+  logger: customLogger,        // Custom logger (default: console)
+  blockMs: 60000,             // Block timeout in ms (default: 30000)
+  autoAck: true,              // Auto-acknowledge messages (default: false)
+  startID: "0",               // Start from beginning (default: "$")
+  consumer: "worker-1",        // Consumer name (default: "consumer-1")
+  timeZone: "UTC",            // Timezone for timestamps (default: "America/Curacao")
+  maxLength: 50000,           // Stream max length (default: 10000)
+  initLog: false,             // Disable init logging (default: true)
+});
 ```
 
-### Batch Publishing
+### Event Filtering
 
 ```typescript
-const events = [
-  { event: "user.created", aggregateId: "user-1", payload: { name: "Alice" } },
-  { event: "user.created", aggregateId: "user-2", payload: { name: "Bob" } },
-  { event: "user.updated", aggregateId: "user-1", payload: { email: "alice@example.com" } },
-];
+// Only process specific event types
+await handler.subscribe(async (message) => {
+  console.log(`Processing: ${message.event}`);
+  await message.ack();
+}, ["user.created", "user.updated", "user.deleted"]);
 
-const result = await eventStream.publishBatch(events, {
-  maxBatchSize: 100,
-  onError: (error, failedEvents) => {
-    console.error("Batch error:", error);
-    // Handle failed events
+// Process all events (no filter)
+await handler.subscribe(async (message) => {
+  console.log(`Processing: ${message.event}`);
+  await message.ack();
+});
+```
+
+### JSON Payload Handling
+
+```typescript
+// Complex objects are automatically JSON serialized/deserialized
+await eventStream.publish("user.profile.updated", "user-123", {
+  profile: {
+    name: "John Doe",
+    email: "john@example.com",
+    preferences: {
+      notifications: true,
+      theme: "dark"
+    }
   },
+  metadata: {
+    source: "profile-service",
+    version: "1.2.0"
+  }
+}, { requestId: "req-456" });
+
+// In consumer - payload is automatically parsed
+await handler.subscribe(async (message) => {
+  const data = message.payload; // Already parsed as object
+  console.log("User name:", data.profile.name);
+  console.log("Source:", data.metadata.source);
+  await message.ack();
 });
 ```
 
-### Health Monitoring
+## 🩺 Health Monitoring
+
+The library provides comprehensive health monitoring for production deployments:
+
+### Health Check Methods
 
 ```typescript
 import RedisEventStream, { StreamHealthStatus } from "@nelreina/redis-stream-event";
@@ -158,7 +189,7 @@ import RedisEventStream, { StreamHealthStatus } from "@nelreina/redis-stream-eve
 const eventStream = new RedisEventStream(redis, "events", "service");
 const handler = await eventStream.createStream();
 
-// Start consuming
+// Start consumer
 handler.subscribe(async (msg) => {
   await processMessage(msg);
   await msg.ack();
@@ -166,160 +197,8 @@ handler.subscribe(async (msg) => {
 
 // Get comprehensive health status
 const health: StreamHealthStatus = await eventStream.getStreamHealth(handler);
-console.log("Health:", health);
-// {
-//   isAlive: true,              // Redis connection active
-//   isReading: true,            // Consumer loop running
-//   lastActivity: Date,         // Last message processed
-//   pendingMessages: 5,         // Messages waiting
-//   consumerLag: 150,           // How far behind
-//   messagesProcessed: 1250,    // Total processed
-//   lastError: null,            // Last error (if any)
-//   status: "healthy"           // Overall status
-// }
-
-// Health check without handler (connection-only)
-const basicHealth = await eventStream.getStreamHealth();
-console.log("Basic health:", basicHealth);
-
-// Use in health endpoints
-app.get('/health', async (req, res) => {
-  try {
-    const health = await eventStream.getStreamHealth(handler);
-    const statusCode = health.status === 'healthy' ? 200 :
-                       health.status === 'degraded' ? 200 : 503;
-    res.status(statusCode).json(health);
-  } catch (error) {
-    res.status(503).json({ status: 'unhealthy', error: error.message });
-  }
-});
+console.log("Health status:", health);
 ```
-
-### Dead Letter Queue
-
-```typescript
-const eventStream = RedisEventStream.builder(redis, "orders", "service")
-  .withDeadLetterStream("orders:dlq")
-  .withRetries(3, 1000)
-  .build();
-
-// Process dead letters
-const dlqStream = RedisEventStream.builder(redis, "orders:dlq", "dlq-processor")
-  .build();
-
-await dlqStream.createConsumer(async (message) => {
-  console.log("Dead letter:", message);
-  // Analyze and potentially fix/retry
-});
-```
-
-## 🏗️ API Reference
-
-### RedisEventStream
-
-#### Static Methods
-
-##### `builder(client, streamKey, consumerGroup)`
-Creates a new builder instance for configuring the event stream.
-
-#### Builder Methods
-
-- `withLogger(logger)` - Set custom logger
-- `withBlockTimeout(ms)` - Set blocking timeout for reads
-- `withAutoAck(enabled)` - Enable automatic acknowledgment
-- `withStartId(id)` - Set starting message ID
-- `withConsumer(name)` - Set consumer name
-- `withTimeZone(tz)` - Set timezone for timestamps
-- `withMaxLength(length)` - Set maximum stream length
-- `withRetries(max, delayMs)` - Configure retry behavior
-- `withDeadLetterStream(key)` - Set dead letter stream
-- `withMetrics(enabled)` - Enable metrics collection
-- `withConnectionPool(size)` - Set connection pool size
-- `withSchema(schema)` - Add event schema
-- `withMiddleware(middleware)` - Add middleware
-
-#### Instance Methods
-
-##### `publish<T>(event, aggregateId, payload, metadata?)`
-Publishes a single event with optional metadata.
-
-**Returns**: `Result<string>` - Success with message ID or error
-
-##### `publishBatch<T>(events, options?)`
-Publishes multiple events in batch.
-
-**Returns**: `Result<string[]>` - Success with message IDs or error
-
-##### `createConsumer<T>(handler, options?)`
-Creates a consumer for processing events.
-
-**Returns**: `Result<StreamConsumer<T>>` - Success with consumer or error
-
-##### `getHealth()`
-Gets the current health status of the stream.
-
-**Returns**: `Promise<HealthStatus>`
-
-##### `getMetrics()`
-Gets current metrics if enabled.
-
-**Returns**: `StreamMetrics | undefined`
-
-##### `getStreamHealth(streamHandler?)`
-Gets comprehensive health status for the stream and optional handler.
-
-**Parameters**:
-- `streamHandler` (optional): StreamHandler instance to include handler-specific health info
-
-**Returns**: `Promise<StreamHealthStatus>` - Complete health status information
-
-### StreamConsumer
-
-#### Methods
-
-##### `start(eventFilter?)`
-Starts consuming events, optionally filtering by event types.
-
-##### `stop()`
-Gracefully stops the consumer.
-
-##### `getHealthStatus()`
-Gets the current health status of the stream handler.
-
-**Returns**: `Partial<StreamHealthStatus>` - Handler-specific health information
-
-## 🛡️ Error Handling
-
-The library uses a `Result<T, E>` type for error handling:
-
-```typescript
-const result = await eventStream.publish("event", "id", data);
-
-if (result.ok) {
-  console.log("Message ID:", result.value);
-} else {
-  console.error("Error:", result.error);
-  
-  // Specific error types
-  if (result.error instanceof ValidationError) {
-    console.error("Validation errors:", result.error.errors);
-  }
-}
-```
-
-### Error Types
-
-- `ConnectionError` - Redis connection failures
-- `ConsumerGroupError` - Consumer group operations
-- `PublishError` - Publishing failures
-- `ProcessingError` - Message processing errors
-- `ValidationError` - Schema validation failures
-- `TimeoutError` - Operation timeouts
-- `MaxRetriesExceededError` - Retry limit reached
-
-## 🩺 Health Monitoring
-
-The library provides comprehensive health monitoring for production deployments:
 
 ### StreamHealthStatus Interface
 
@@ -336,113 +215,283 @@ interface StreamHealthStatus {
 }
 ```
 
-### Health Check Methods
-
-#### `getStreamHealth(handler?: StreamHandler)`
-Returns comprehensive health status including Redis connection, consumer group information, and optional handler-specific metrics.
-
-```typescript
-// With handler for full metrics
-const health = await eventStream.getStreamHealth(handler);
-
-// Without handler for connection-only check
-const basicHealth = await eventStream.getStreamHealth();
-```
-
-#### `handler.getHealthStatus()`
-Returns handler-specific health information (non-async).
-
-```typescript
-const handlerHealth = handler.getHealthStatus();
-```
-
 ### Health Status Levels
 
 - **healthy**: Redis connected, consumer reading, lag < 1000 messages
 - **degraded**: Redis connected, but lag 1000-10000 messages or consumer not reading
 - **unhealthy**: Redis disconnected or lag > 10000 messages
 
+### Production Health Endpoint
+
+```typescript
+// Express.js health endpoint
+app.get('/health', async (req, res) => {
+  try {
+    const health = await eventStream.getStreamHealth(handler);
+    const statusCode = health.status === 'healthy' ? 200 :
+                       health.status === 'degraded' ? 200 : 503;
+    res.status(statusCode).json(health);
+  } catch (error) {
+    res.status(503).json({
+      status: 'unhealthy',
+      error: error.message
+    });
+  }
+});
+```
+
 ### Kubernetes Health Probes
 
 ```yaml
-apiVersion: v1
-kind: Pod
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: event-processor
 spec:
-  containers:
-  - name: app
-    livenessProbe:
-      httpGet:
-        path: /health
-        port: 3000
-      initialDelaySeconds: 30
-      periodSeconds: 10
-    readinessProbe:
-      httpGet:
-        path: /health
-        port: 3000
-      initialDelaySeconds: 5
-      periodSeconds: 5
+  template:
+    spec:
+      containers:
+      - name: app
+        image: myapp:latest
+        ports:
+        - containerPort: 3000
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 3000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 3000
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 2
 ```
 
-## 🧪 Testing
+## 🏗️ API Reference
 
-The library includes utilities for testing:
+### RedisEventStream
+
+#### Constructor
 
 ```typescript
-import { InMemoryRedisClient } from "@nelreina/redis-stream-event/testing";
-
-const mockClient = new InMemoryRedisClient();
-const eventStream = RedisEventStream.builder(
-  mockClient,
-  "test-stream",
-  "test-group"
-).build();
-
-// Write your tests
-const result = await eventStream.publish("test.event", "id", { data: "test" });
-expect(result.ok).toBe(true);
+new RedisEventStream(
+  client: RedisClient,
+  streamKeyName: string | string[],
+  groupName: string,
+  options?: StreamOptions
+)
 ```
 
-## 📊 Metrics Export
+**Parameters:**
+- `client`: Redis client instance (ioredis, node-redis, etc.)
+- `streamKeyName`: Stream name(s) - string for single stream, array for multiple
+- `groupName`: Consumer group name (acts as service identifier)
+- `options`: Optional configuration
 
-Export metrics in Prometheus format:
+#### Methods
+
+##### `publish(event, aggregateId, data, headers, streamKey?)`
+Publishes an event to the Redis stream.
+
+**Parameters:**
+- `event`: Event type/name (string)
+- `aggregateId`: Unique identifier for the entity (string)
+- `data`: Event payload (any serializable data)
+- `headers`: Event headers (Record<string, string>)
+- `streamKey`: Optional specific stream (defaults to first configured stream)
+
+**Returns:** `Promise<string>` - Redis stream message ID
+
+##### `createStream(streamKeys?)`
+Creates a stream handler for consuming messages.
+
+**Parameters:**
+- `streamKeys`: Optional specific stream keys to consume from
+
+**Returns:** `Promise<StreamHandler | null>` - Stream handler instance
+
+##### `getStreamHealth(streamHandler?)`
+Gets comprehensive health status for the stream.
+
+**Parameters:**
+- `streamHandler`: Optional StreamHandler for detailed metrics
+
+**Returns:** `Promise<StreamHealthStatus>` - Complete health status
+
+### StreamHandler
+
+#### Methods
+
+##### `subscribe(eventHandler, filterEvents?)`
+Subscribes to events from the stream(s) with optional filtering.
+
+**Parameters:**
+- `eventHandler`: Async function to handle received events
+- `filterEvents`: Optional array of event types to process
+
+**Returns:** `Promise<void>` - Runs until error or termination
+
+##### `ack(streamKey, messageId)`
+Acknowledges a message as processed.
+
+**Parameters:**
+- `streamKey`: Stream key the message belongs to
+- `messageId`: Redis stream message ID
+
+**Returns:** `Promise<number>` - Number of messages acknowledged
+
+##### `getHealthStatus()`
+Gets handler-specific health information.
+
+**Returns:** `Partial<StreamHealthStatus>` - Handler health status
+
+### StreamMessage Interface
 
 ```typescript
-const collector = eventStream.getMetrics();
-const prometheusMetrics = collector.toPrometheusFormat("app_events");
+interface StreamMessage {
+  streamId: string;        // Redis stream message ID
+  event: string;           // Event type
+  aggregateId: string;     // Entity identifier
+  timestamp: string;       // Event timestamp
+  serviceName: string;     // Publishing service name
+  mimeType?: string;       // Content type (optional)
+  payload: unknown;        // Event data (parsed from JSON)
+  headers: Record<string, string>; // Event headers
+  ack: () => Promise<number>;      // Acknowledgment function
+}
 ```
 
-## 🔧 Configuration Reference
-
-### StreamOptions
+### StreamOptions Interface
 
 ```typescript
 interface StreamOptions {
-  logger?: Logger;              // Custom logger (default: console)
-  blockMs?: number;            // Block timeout in ms (default: 30000)
-  autoAck?: boolean;           // Auto acknowledge (default: false)
-  startID?: string;            // Start consuming from (default: "$")
-  consumer?: string;           // Consumer name (default: "consumer-1")
-  timeZone?: string;           // Timezone (default: "UTC")
-  maxLength?: number;          // Max stream length (default: 10000)
-  initLog?: boolean;           // Log initialization (default: false)
-  maxRetries?: number;         // Max retry attempts (default: 3)
-  retryDelayMs?: number;       // Retry delay in ms (default: 1000)
-  deadLetterStream?: string;   // Dead letter stream key
-  enableMetrics?: boolean;     // Enable metrics (default: false)
-  connectionPoolSize?: number; // Connection pool size (default: 1)
-  prefetchCount?: number;      // Messages to prefetch (default: 1)
+  logger?: Logger;         // Custom logger (default: console)
+  blockMs?: number;        // Block timeout in ms (default: 30000)
+  autoAck?: boolean;       // Auto acknowledge (default: false)
+  startID?: string;        // Start consuming from (default: "$")
+  consumer?: string;       // Consumer name (default: "consumer-1")
+  timeZone?: string;       // Timezone (default: "America/Curacao")
+  maxLength?: number;      // Max stream length (default: 10000)
+  initLog?: boolean;       // Log initialization (default: true)
 }
 ```
 
-### ConsumerOptions
+## 🛡️ Error Handling
+
+The library provides robust error handling:
 
 ```typescript
-interface ConsumerOptions extends StreamOptions {
-  concurrency?: number;        // Concurrent message processing
-  processingTimeout?: number;  // Processing timeout in ms
-  errorHandler?: (error, message) => Promise<void>;
+try {
+  const messageId = await eventStream.publish("event", "id", data, {});
+  console.log("Published with ID:", messageId);
+} catch (error) {
+  console.error("Publish failed:", error);
+  // Handle publish failure
 }
+
+// Consumer error handling
+await handler.subscribe(async (message) => {
+  try {
+    await processMessage(message);
+    await message.ack();
+  } catch (processingError) {
+    console.error("Processing failed:", processingError);
+    // Don't ack - message remains pending for retry
+
+    // Optionally implement dead letter queue logic
+    if (shouldSendToDeadLetter(processingError)) {
+      await sendToDeadLetterQueue(message);
+      await message.ack(); // Ack to remove from main stream
+    }
+  }
+});
+```
+
+## 🌍 Timezone Support
+
+Configure timestamp formatting for your timezone:
+
+```typescript
+const eventStream = new RedisEventStream(redis, "events", "service", {
+  timeZone: "UTC",              // UTC timestamps
+  // timeZone: "America/New_York", // Eastern time
+  // timeZone: "Europe/London",    // London time
+  // timeZone: "Asia/Tokyo",       // Japan time
+});
+```
+
+Timestamps are formatted as: `YYYY-MM-DDTHH:mm:ss.SSS`
+
+## 🧪 Testing
+
+The library works with any Redis-compatible client and supports testing:
+
+```typescript
+// Use Redis mock for tests
+import RedisMock from "ioredis-mock";
+
+const mockRedis = new RedisMock();
+const eventStream = new RedisEventStream(mockRedis, "test-stream", "test-group");
+
+// Test publishing
+const messageId = await eventStream.publish("test.event", "test-id",
+  { test: "data" }, { source: "test" });
+
+console.log("Message published:", messageId);
+
+// Test consuming
+const handler = await eventStream.createStream();
+const messages = [];
+
+await handler.subscribe(async (message) => {
+  messages.push(message);
+  await message.ack();
+}, ["test.event"]);
+```
+
+## 🚀 Production Deployment
+
+### Best Practices
+
+1. **Use specific consumer names** for each instance:
+```typescript
+const eventStream = new RedisEventStream(redis, "events", "service", {
+  consumer: `worker-${process.env.HOSTNAME || 'unknown'}`,
+});
+```
+
+2. **Configure appropriate timeouts**:
+```typescript
+const eventStream = new RedisEventStream(redis, "events", "service", {
+  blockMs: 30000,  // 30 second timeout
+  maxLength: 100000, // Retain 100k messages
+});
+```
+
+3. **Implement graceful shutdown**:
+```typescript
+process.on('SIGTERM', async () => {
+  console.log('Shutting down gracefully...');
+  // Stream handler will exit the subscribe loop
+  await redis.quit();
+  process.exit(0);
+});
+```
+
+4. **Monitor health endpoints**:
+```typescript
+setInterval(async () => {
+  const health = await eventStream.getStreamHealth(handler);
+  if (health.status !== 'healthy') {
+    console.warn('Stream health degraded:', health);
+  }
+}, 30000); // Check every 30 seconds
 ```
 
 ## 🤝 Contributing
