@@ -8,9 +8,9 @@ interface RedisGroupInfo {
   name: string;
   consumers: number;
   pending: number;
-  'last-delivered-id': string;
-  'entries-read'?: number;
-  'lag'?: number;
+  "last-delivered-id": string;
+  "entries-read"?: number;
+  "lag"?: number;
 }
 
 /** Redis stream consumer information */
@@ -18,7 +18,7 @@ interface RedisConsumerInfo {
   name: string;
   pending: number;
   idle: number;
-  'inactive'?: number;
+  "inactive"?: number;
 }
 
 /** Redis stream message data */
@@ -38,13 +38,31 @@ interface RedisClient {
   isOpen: boolean;
   connect(): Promise<void>;
   duplicate(): RedisClient;
-  xAdd(key: string, id: string, fields: Record<string, string>): Promise<string>;
+  xAdd(
+    key: string,
+    id: string,
+    fields: Record<string, string>,
+  ): Promise<string>;
   xTrim(key: string, strategy: string, threshold: number): Promise<number>;
-  xGroupCreate(key: string, group: string, id: string, options?: { MKSTREAM?: boolean }): Promise<string>;
+  xGroupCreate(
+    key: string,
+    group: string,
+    id: string,
+    options?: { MKSTREAM?: boolean },
+  ): Promise<string>;
   xInfoGroups(key: string): Promise<RedisGroupInfo[]>;
-  xGroupCreateConsumer(key: string, group: string, consumer: string): Promise<number>;
+  xGroupCreateConsumer(
+    key: string,
+    group: string,
+    consumer: string,
+  ): Promise<number>;
   xInfoConsumers(key: string, group: string): Promise<RedisConsumerInfo[]>;
-  xReadGroup(group: string, consumer: string, streams: { key: string; id: string } | Array<{ key: string; id: string }>, options?: { BLOCK?: number; COUNT?: number }): Promise<RedisStreamResponse[] | null>;
+  xReadGroup(
+    group: string,
+    consumer: string,
+    streams: { key: string; id: string } | Array<{ key: string; id: string }>,
+    options?: { BLOCK?: number; COUNT?: number },
+  ): Promise<RedisStreamResponse[] | null>;
   xAck(key: string, group: string, ...ids: string[]): Promise<number>;
 }
 
@@ -94,22 +112,34 @@ interface StreamMessage {
 /** Event handler function type */
 type EventHandler = (message: StreamMessage) => Promise<void>;
 
+/** Health status for stream monitoring */
+interface StreamHealthStatus {
+  isAlive: boolean; // Redis connection is active
+  isReading: boolean; // Consumer loop is running
+  lastActivity: Date | null; // Last message processed time
+  pendingMessages: number; // Messages waiting to be processed
+  consumerLag: number; // How far behind the consumer is
+  messagesProcessed: number; // Total messages processed
+  lastError: Error | null; // Last error encountered
+  status: "healthy" | "degraded" | "unhealthy";
+}
+
 /**
  * Redis Event Stream client for publishing and subscribing to events using Redis Streams.
  * Supports consumer groups, automatic acknowledgments, and configurable stream management.
- * 
+ *
  * @example
  * ```javascript
  * const redis = new Redis();
  * const eventStream = new RedisEventStream(redis, "orders", "order-processor");
- * 
+ *
  * // Publisher
  * await eventStream.publish("order.created", "order123", {
  *   id: "order123",
  *   amount: 100,
  *   currency: "USD"
  * });
- * 
+ *
  * // Subscriber
  * const ordersStream = await eventStream.createStream();
  * await ordersStream.subscribe(async ({ event, payload, ack }) => {
@@ -128,16 +158,23 @@ class RedisEventStream {
 
   /**
    * Creates a new RedisEventStream instance.
-   * 
+   *
    * @param client - Redis client instance (ioredis or similar)
    * @param streamKeyName - Name of the Redis stream key or array of stream keys
    * @param groupName - Name of the consumer group
    * @param options - Configuration options
    */
-  constructor(client: RedisClient, streamKeyName: string | string[], groupName: string, options: StreamOptions = {}) {
+  constructor(
+    client: RedisClient,
+    streamKeyName: string | string[],
+    groupName: string,
+    options: StreamOptions = {},
+  ) {
     this.client = client;
     this.logger = options.logger || console;
-    this.streamKeyNames = Array.isArray(streamKeyName) ? streamKeyName : [streamKeyName];
+    this.streamKeyNames = Array.isArray(streamKeyName)
+      ? streamKeyName
+      : [streamKeyName];
     this.groupName = groupName;
     this.options = options;
     this.defaultOptions = {
@@ -158,16 +195,21 @@ class RedisEventStream {
   /**
    * Creates a stream handler for consuming messages from the Redis stream(s).
    * Sets up consumer group and consumer if they don't exist.
-   * 
+   *
    * @param streamKeys - Optional specific stream keys to consume from (defaults to all configured streams)
    * @returns Stream handler instance or null if creation failed
    */
-  async createStream(streamKeys?: string | string[]): Promise<StreamHandler | null> {
-    const streamOptions: Required<StreamOptions> = { ...this.defaultOptions, ...this.options };
+  async createStream(
+    streamKeys?: string | string[],
+  ): Promise<StreamHandler | null> {
+    const streamOptions: Required<StreamOptions> = {
+      ...this.defaultOptions,
+      ...this.options,
+    };
     const { startID, consumer } = streamOptions;
 
     // Determine which streams to use
-    const keysToUse = streamKeys 
+    const keysToUse = streamKeys
       ? (Array.isArray(streamKeys) ? streamKeys : [streamKeys])
       : this.streamKeyNames;
 
@@ -195,7 +237,7 @@ class RedisEventStream {
 
   /**
    * Publishes an event to the Redis stream.
-   * 
+   *
    * @param event - Event type/name
    * @param aggregateId - Unique identifier for the aggregate/entity
    * @param data - Event payload data (will be JSON stringified)
@@ -203,8 +245,17 @@ class RedisEventStream {
    * @param streamKey - Optional specific stream key to publish to (defaults to first configured stream)
    * @returns Redis stream message ID
    */
-  async publish(event: string, aggregateId: string, data: unknown, headers: Record<string, string>, streamKey?: string): Promise<string> {
-    const streamOptions: Required<StreamOptions> = { ...this.defaultOptions, ...this.options };
+  async publish(
+    event: string,
+    aggregateId: string,
+    data: unknown,
+    headers: Record<string, string>,
+    streamKey?: string,
+  ): Promise<string> {
+    const streamOptions: Required<StreamOptions> = {
+      ...this.defaultOptions,
+      ...this.options,
+    };
     const { timeZone, maxLength } = streamOptions;
     if (!this.client.isOpen) {
       await this.client.connect();
@@ -219,7 +270,7 @@ class RedisEventStream {
     if (typeof payload === "string") {
       try {
         payload = JSON.parse(payload);
-      } catch (error) {
+      } catch (_error) {
         payload = data;
       }
     }
@@ -228,7 +279,9 @@ class RedisEventStream {
       event,
       aggregateId,
       timestamp: this._getLocalTimestamp(timeZone),
-      payload: typeof payload === "object" ? JSON.stringify(payload) : payload as string,
+      payload: typeof payload === "object"
+        ? JSON.stringify(payload)
+        : payload as string,
       serviceName: this.groupName,
       headers,
     };
@@ -252,13 +305,16 @@ class RedisEventStream {
 
   /**
    * Creates a consumer group for the stream if it doesn't exist.
-   * 
+   *
    * @private
    * @param streamKey - Stream key to create group for
    * @param startID - Starting message ID for the group
    * @returns True if group was created or already exists
    */
-  private async _createGroup(streamKey: string, startID: string): Promise<boolean> {
+  private async _createGroup(
+    streamKey: string,
+    startID: string,
+  ): Promise<boolean> {
     try {
       await this.client.xGroupCreate(
         streamKey,
@@ -277,10 +333,12 @@ class RedisEventStream {
     } catch (error) {
       if (error instanceof Error && error.message.includes("already exists")) {
         const info = await this.client.xInfoGroups(streamKey);
-        this.logger.info(this._formatGroupInfoWithStream(info, streamKey  ));
+        this.logger.info(this._formatGroupInfoWithStream(info, streamKey));
         return true;
       } else {
-        this.logger.error(error instanceof Error ? error.message : String(error));
+        this.logger.error(
+          error instanceof Error ? error.message : String(error),
+        );
         return false;
       }
     }
@@ -288,13 +346,16 @@ class RedisEventStream {
 
   /**
    * Creates a consumer within the consumer group.
-   * 
+   *
    * @private
    * @param streamKey - Stream key to create consumer for
    * @param consumer - Consumer name
    * @returns True if consumer was created successfully
    */
-  private async _createConsumer(streamKey: string, consumer: string): Promise<boolean> {
+  private async _createConsumer(
+    streamKey: string,
+    consumer: string,
+  ): Promise<boolean> {
     try {
       await this.client.xGroupCreateConsumer(
         streamKey,
@@ -318,40 +379,45 @@ class RedisEventStream {
 
   /**
    * Formats consumer info to show only name and pending messages.
-   * 
+   *
    * @private
    * @param consumers - Array of consumer information
    * @returns Formatted string for logging
    */
   /**
    * Formats consumer info to show only name and pending messages, and logs the count of consumers on the given stream key.
-   * 
+   *
    * @private
    * @param consumers - Array of consumer information
    * @param streamKey - Stream key associated with the consumers
    * @returns Formatted string for logging
    */
-  private _formatConsumerInfoWithStream(consumers: RedisConsumerInfo[], streamKey: string): string {
+  private _formatConsumerInfoWithStream(
+    consumers: RedisConsumerInfo[],
+    streamKey: string,
+  ): string {
     const count = consumers ? consumers.length : 0;
     return `${count} consumers on ${streamKey}`;
   }
 
-
   /**
    * Formats group info to show only name and pending messages.
-   * 
+   *
    * @private
    * @param groups - Array of group information
    * @returns Formatted string for logging
    */
-  private _formatGroupInfoWithStream(groups: RedisGroupInfo[], streamKey: string): string {
+  private _formatGroupInfoWithStream(
+    groups: RedisGroupInfo[],
+    streamKey: string,
+  ): string {
     const count = groups ? groups.length : 0;
     return `${count} groups on ${streamKey}`;
   }
 
   /**
    * Generates a localized timestamp string for the specified timezone.
-   * 
+   *
    * @private
    * @param timeZone - Target timezone for the timestamp
    * @returns Formatted timestamp string
@@ -377,6 +443,82 @@ class RedisEventStream {
       .replace(/(\d{2}:\d{2}:\d{2})/, "$1.");
     return timestamp;
   }
+
+  /**
+   * Gets comprehensive health status for the stream and optional handler.
+   *
+   * @param streamHandler - Optional StreamHandler instance to include handler-specific health info
+   * @returns Complete health status information
+   */
+  async getStreamHealth(
+    streamHandler?: StreamHandler,
+  ): Promise<StreamHealthStatus> {
+    let isAlive = false;
+    let pendingMessages = 0;
+    let consumerLag = 0;
+
+    try {
+      // Check Redis connection
+      isAlive = this.client.isOpen;
+      if (!isAlive && this.client.connect) {
+        await this.client.connect();
+        isAlive = this.client.isOpen;
+      }
+
+      // Get consumer group information
+      if (isAlive) {
+        try {
+          for (const streamKey of this.streamKeyNames) {
+            const groups = await this.client.xInfoGroups(streamKey);
+            const group = groups.find((g) => g.name === this.groupName);
+            if (group) {
+              pendingMessages += group.pending || 0;
+              consumerLag += group.lag || 0;
+            }
+          }
+        } catch (error) {
+          // If we can't get group info, stream might not exist yet
+          this.logger.error("Error getting group info:", error);
+        }
+      }
+    } catch (error) {
+      isAlive = false;
+      this.logger.error("Error checking Redis connection:", error);
+    }
+
+    // Get handler-specific health info
+    let handlerHealth: Partial<StreamHealthStatus> = {
+      isReading: false,
+      lastActivity: null,
+      messagesProcessed: 0,
+      lastError: null,
+    };
+
+    if (streamHandler) {
+      handlerHealth = streamHandler.getHealthStatus();
+    }
+
+    // Determine overall status
+    let status: "healthy" | "degraded" | "unhealthy" = "unhealthy";
+    if (isAlive) {
+      if (handlerHealth.isReading && consumerLag < 1000) {
+        status = "healthy";
+      } else if (consumerLag < 10000) {
+        status = "degraded";
+      }
+    }
+
+    return {
+      isAlive,
+      isReading: handlerHealth.isReading || false,
+      lastActivity: handlerHealth.lastActivity || null,
+      pendingMessages,
+      consumerLag,
+      messagesProcessed: handlerHealth.messagesProcessed || 0,
+      lastError: handlerHealth.lastError || null,
+      status,
+    };
+  }
 }
 
 /**
@@ -389,17 +531,27 @@ class StreamHandler {
   private groupName: string;
   private options: Required<StreamOptions>;
   private logger: Logger;
+  private isActive = false;
+  private lastMessageTime: Date | null = null;
+  private messagesProcessed = 0;
+  private lastError: Error | null = null;
 
   /**
    * Creates a new StreamHandler instance.
-   * 
+   *
    * @param client - Dedicated Redis client for streaming
    * @param streamKeys - Array of Redis stream key names
    * @param groupName - Consumer group name
    * @param options - Stream configuration options
    * @param logger - Logger instance
    */
-  constructor(client: RedisClient, streamKeys: string[], groupName: string, options: Required<StreamOptions>, logger: Logger) {
+  constructor(
+    client: RedisClient,
+    streamKeys: string[],
+    groupName: string,
+    options: Required<StreamOptions>,
+    logger: Logger,
+  ) {
     this.client = client;
     this.streamKeys = streamKeys;
     this.groupName = groupName;
@@ -409,7 +561,7 @@ class StreamHandler {
 
   /**
    * Acknowledges a message as processed.
-   * 
+   *
    * @param streamKey - Stream key the message belongs to
    * @param messageId - Redis stream message ID to acknowledge
    * @returns Number of messages acknowledged
@@ -425,11 +577,11 @@ class StreamHandler {
   /**
    * Subscribes to events from multiple Redis streams with optional event filtering.
    * Continuously processes messages until an error occurs or the process is terminated.
-   * 
+   *
    * @param eventHandler - Async function to handle received events
    * @param filterEvents - Array of event types to process, or null for all events
    * @throws Throws error if stream processing fails
-   * 
+   *
    * @example
    * ```javascript
    * await streamHandler.subscribe(async ({ event, payload, ack }) => {
@@ -438,14 +590,20 @@ class StreamHandler {
    * }, ["order.created", "order.updated"]);
    * ```
    */
-  async subscribe(eventHandler: EventHandler, filterEvents: string[] | null = null): Promise<void> {
+  async subscribe(
+    eventHandler: EventHandler,
+    filterEvents: string[] | null = null,
+  ): Promise<void> {
     const { blockMs, consumer } = this.options;
+
+    this.isActive = true;
+    this.lastError = null;
 
     try {
       while (true) {
         // Build streams array for xReadGroup with multiple streams
-        const streams = this.streamKeys.map(key => ({ key, id: ">" }));
-        
+        const streams = this.streamKeys.map((key) => ({ key, id: ">" }));
+
         const messages = await this.client.xReadGroup(
           this.groupName,
           consumer,
@@ -458,7 +616,7 @@ class StreamHandler {
         // Process messages from all streams
         for (const streamResponse of messages) {
           const streamKey = streamResponse.name;
-          
+
           for (const streamData of streamResponse.messages) {
             const { id, message } = streamData;
 
@@ -494,6 +652,8 @@ class StreamHandler {
                 ack: () => this.ack(streamKey, id),
               };
               await eventHandler(streamMessage);
+              this.lastMessageTime = new Date();
+              this.messagesProcessed++;
             } else {
               await this.ack(streamKey, id);
             }
@@ -501,10 +661,30 @@ class StreamHandler {
         }
       }
     } catch (error) {
+      this.lastError = error instanceof Error
+        ? error
+        : new Error(String(error));
       this.logger.error("Stream processing error:", error);
       throw error;
+    } finally {
+      this.isActive = false;
     }
+  }
+
+  /**
+   * Gets the current health status of this stream handler.
+   *
+   * @returns Partial health status information from the handler
+   */
+  getHealthStatus(): Partial<StreamHealthStatus> {
+    return {
+      isReading: this.isActive,
+      lastActivity: this.lastMessageTime,
+      messagesProcessed: this.messagesProcessed,
+      lastError: this.lastError,
+    };
   }
 }
 
+export type { StreamHealthStatus };
 export default RedisEventStream;

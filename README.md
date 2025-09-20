@@ -153,22 +153,45 @@ const result = await eventStream.publishBatch(events, {
 ### Health Monitoring
 
 ```typescript
-// Get health status
-const health = await eventStream.getHealth();
+import RedisEventStream, { StreamHealthStatus } from "@nelreina/redis-stream-event";
+
+const eventStream = new RedisEventStream(redis, "events", "service");
+const handler = await eventStream.createStream();
+
+// Start consuming
+handler.subscribe(async (msg) => {
+  await processMessage(msg);
+  await msg.ack();
+});
+
+// Get comprehensive health status
+const health: StreamHealthStatus = await eventStream.getStreamHealth(handler);
 console.log("Health:", health);
 // {
-//   status: "healthy" | "degraded" | "unhealthy",
-//   checks: { redis: true, consumer: true, lag: 150 },
-//   timestamp: "2024-01-01T00:00:00.000Z"
+//   isAlive: true,              // Redis connection active
+//   isReading: true,            // Consumer loop running
+//   lastActivity: Date,         // Last message processed
+//   pendingMessages: 5,         // Messages waiting
+//   consumerLag: 150,           // How far behind
+//   messagesProcessed: 1250,    // Total processed
+//   lastError: null,            // Last error (if any)
+//   status: "healthy"           // Overall status
 // }
 
-// Get metrics
-const metrics = eventStream.getMetrics();
-console.log("Metrics:", {
-  published: metrics.messagesPublished,
-  consumed: metrics.messagesConsumed,
-  failed: metrics.messagesFailed,
-  lag: metrics.consumerLag,
+// Health check without handler (connection-only)
+const basicHealth = await eventStream.getStreamHealth();
+console.log("Basic health:", basicHealth);
+
+// Use in health endpoints
+app.get('/health', async (req, res) => {
+  try {
+    const health = await eventStream.getStreamHealth(handler);
+    const statusCode = health.status === 'healthy' ? 200 :
+                       health.status === 'degraded' ? 200 : 503;
+    res.status(statusCode).json(health);
+  } catch (error) {
+    res.status(503).json({ status: 'unhealthy', error: error.message });
+  }
 });
 ```
 
@@ -242,6 +265,14 @@ Gets current metrics if enabled.
 
 **Returns**: `StreamMetrics | undefined`
 
+##### `getStreamHealth(streamHandler?)`
+Gets comprehensive health status for the stream and optional handler.
+
+**Parameters**:
+- `streamHandler` (optional): StreamHandler instance to include handler-specific health info
+
+**Returns**: `Promise<StreamHealthStatus>` - Complete health status information
+
 ### StreamConsumer
 
 #### Methods
@@ -251,6 +282,11 @@ Starts consuming events, optionally filtering by event types.
 
 ##### `stop()`
 Gracefully stops the consumer.
+
+##### `getHealthStatus()`
+Gets the current health status of the stream handler.
+
+**Returns**: `Partial<StreamHealthStatus>` - Handler-specific health information
 
 ## 🛡️ Error Handling
 
@@ -280,6 +316,73 @@ if (result.ok) {
 - `ValidationError` - Schema validation failures
 - `TimeoutError` - Operation timeouts
 - `MaxRetriesExceededError` - Retry limit reached
+
+## 🩺 Health Monitoring
+
+The library provides comprehensive health monitoring for production deployments:
+
+### StreamHealthStatus Interface
+
+```typescript
+interface StreamHealthStatus {
+  isAlive: boolean;           // Redis connection is active
+  isReading: boolean;         // Consumer loop is running
+  lastActivity: Date | null;  // Last message processed time
+  pendingMessages: number;    // Messages waiting to be processed
+  consumerLag: number;        // How far behind the consumer is
+  messagesProcessed: number;  // Total messages processed
+  lastError: Error | null;    // Last error encountered
+  status: 'healthy' | 'degraded' | 'unhealthy';
+}
+```
+
+### Health Check Methods
+
+#### `getStreamHealth(handler?: StreamHandler)`
+Returns comprehensive health status including Redis connection, consumer group information, and optional handler-specific metrics.
+
+```typescript
+// With handler for full metrics
+const health = await eventStream.getStreamHealth(handler);
+
+// Without handler for connection-only check
+const basicHealth = await eventStream.getStreamHealth();
+```
+
+#### `handler.getHealthStatus()`
+Returns handler-specific health information (non-async).
+
+```typescript
+const handlerHealth = handler.getHealthStatus();
+```
+
+### Health Status Levels
+
+- **healthy**: Redis connected, consumer reading, lag < 1000 messages
+- **degraded**: Redis connected, but lag 1000-10000 messages or consumer not reading
+- **unhealthy**: Redis disconnected or lag > 10000 messages
+
+### Kubernetes Health Probes
+
+```yaml
+apiVersion: v1
+kind: Pod
+spec:
+  containers:
+  - name: app
+    livenessProbe:
+      httpGet:
+        path: /health
+        port: 3000
+      initialDelaySeconds: 30
+      periodSeconds: 10
+    readinessProbe:
+      httpGet:
+        path: /health
+        port: 3000
+      initialDelaySeconds: 5
+      periodSeconds: 5
+```
 
 ## 🧪 Testing
 
