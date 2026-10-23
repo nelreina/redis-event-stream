@@ -1,4 +1,4 @@
-# Redis Event Stream (v0.10.2)
+# Redis Event Stream (v0.11.0)
 
 A powerful, production-ready Redis Streams library for building event-driven applications with reliable message processing, consumer groups, and comprehensive health monitoring.
 
@@ -15,6 +15,8 @@ A powerful, production-ready Redis Streams library for building event-driven app
 - **🛡️ Error Resilient**: Robust error handling and recovery mechanisms
 - **🧪 Testing Friendly**: Works with any Redis-compatible client (ioredis, node-redis, etc.)
 - **🌍 Timezone Support**: Configurable timestamp formatting
+- **🛑 Graceful stop** (0.11.0): `stop()` unblocks the blocking read with `CLIENT UNBLOCK` and waits for the in-flight handler
+- **♻️ PEL drain + XAUTOCLAIM** (0.11.0): pending entries are re-delivered on start, poison entries are parked, idle entries of dead consumers are claimed periodically
 
 ## 📦 Installation
 
@@ -308,13 +310,20 @@ Publishes an event to the Redis stream.
 
 **Returns:** `Promise<string>` - Redis stream message ID
 
-##### `createStream(streamKeys?)`
-Creates a stream handler for consuming messages.
+##### `createStream(streamKeys?, opts?)`
+Creates a stream handler for consuming messages. Creates the consumer group (MKSTREAM)
+when it does not exist; the consumer is registered by `subscribe()` with the name passed there.
 
 **Parameters:**
 - `streamKeys`: Optional specific stream keys to consume from
+- `opts.startId`: Group creation id when the group does not exist (default: constructor `startID`, `"$"`)
 
 **Returns:** `Promise<StreamHandler | null>` - Stream handler instance
+
+##### `ensureGroup(streamKey, startId?)`
+`XGROUP CREATE <streamKey> <group> <startId> MKSTREAM`; an existing group (BUSYGROUP) is left untouched.
+
+**Returns:** `Promise<void>`
 
 ##### `getStreamHealth(streamHandler?)`
 Gets comprehensive health status for the stream.
@@ -328,17 +337,48 @@ Gets comprehensive health status for the stream.
 
 #### Methods
 
-##### `subscribe(eventHandler, filterEvents?)`
+##### `subscribe(eventHandler, filterEvents?, options?)` / `subscribe(eventHandler, options)`
 Subscribes to events from the stream(s) with optional filtering.
 
 **Parameters:**
 - `eventHandler`: Async function to handle received events
-- `filterEvents`: Optional array of event types to process
+- `filterEvents`: Optional array of event types to process (or `options.events`)
+- `options` (`SubscribeOptions`, all optional):
 
-**Returns:** `Promise<void>` - Runs until error or termination
+| Option | Default | Meaning |
+|---|---|---|
+| `consumer` | constructor `consumer` (`"consumer-1"`) | consumer name for this call |
+| `startId` | constructor `startID` (`"$"`) | group creation id (MKSTREAM) if the group does not exist |
+| `blockMs` | constructor `blockMs` (30000) | XREADGROUP BLOCK; 5000 recommended for tenant handles |
+| `drain` | `{enabled: true, maxDeliveries: 5, parkedStream: "ynohub:parked:<group>", batch: 50}` | PEL drain on start; `false` disables |
+| `autoClaim` | `{enabled: true, minIdleMs: 60000, everyMs: 60000, count: 100}` | XAUTOCLAIM at start and every `everyMs`; `false` disables |
+
+Start sequence per stream: `XGROUP CREATE <startId> MKSTREAM` (BUSYGROUP ignored) →
+drain the consumer's own PEL with a moving cursor (`XREADGROUP … STREAMS key <lastId>` from `"0"`,
+bounded by the XPENDING count) → entries delivered more than `maxDeliveries` times are parked
+(`XADD parkedStream MAXLEN ~ 10000` with `{original fields…, streamKey, group, consumer, entryId, deliveries, reason}` + XACK, WARN log)
+→ `XAUTOCLAIM` of entries idle ≥ `minIdleMs` → `>` loop. The periodic XAUTOCLAIM runs on the
+main (non-blocking) connection; claimed entries are queued and the blocked reader is woken with
+`CLIENT UNBLOCK`, so handlers stay strictly sequential. Trimmed entries still referenced by the PEL are acked.
+
+**Returns:** `Promise<void>` - resolves when `stop()` is called, rejects (after cleanup) on a fatal loop error (handler throw, XREADGROUP error)
+
+##### `stop()`
+Sets `running = false`, sends `CLIENT UNBLOCK <clientId>` for the blocking connection via the main client,
+waits for the loop to exit (the in-flight handler finishes and may ack), then closes the dedicated connection.
+Safe to call more than once.
+
+**Returns:** `Promise<void>`
+
+##### `running` / `clientId`
+`running: boolean` is true while the consume loop runs. `clientId: number` is the `CLIENT ID` of the
+dedicated blocking connection (0 before the first `subscribe()`).
+
+##### `ensureGroup(streamKey, startId?)`
+Same as `RedisEventStream.ensureGroup`.
 
 ##### `ack(streamKey, messageId)`
-Acknowledges a message as processed.
+Acknowledges a message as processed. Since 0.11.0 XACK goes through the main (non-blocking) client.
 
 **Parameters:**
 - `streamKey`: Stream key the message belongs to
@@ -356,6 +396,8 @@ Gets handler-specific health information.
 ```typescript
 interface StreamMessage {
   streamId: string;        // Redis stream message ID
+  streamKey: string;       // Stream the entry was read from (0.11.0)
+  deliveries?: number;     // Delivery count, set for PEL-drain / XAUTOCLAIM re-deliveries (0.11.0)
   event: string;           // Event type
   aggregateId: string;     // Entity identifier
   timestamp: string;       // Event timestamp
@@ -430,7 +472,14 @@ Timestamps are formatted as: `YYYY-MM-DDTHH:mm:ss.SSS`
 
 ## 🧪 Testing
 
-The library works with any Redis-compatible client and supports testing:
+Integration tests run against a real Redis (default `redis://localhost:6379`, override with `REDIS_URL`);
+every test uses its own `test:<random>:` key prefix and deletes its keys:
+
+```bash
+deno task test
+```
+
+The client must be node-redis compatible (camelCase stream commands plus `sendCommand`).
 
 ```typescript
 // Use Redis mock for tests

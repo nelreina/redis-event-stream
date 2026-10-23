@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a TypeScript library for Redis Streams-based event streaming, supporting both Deno and Node.js environments. The package is published to JSR as `@nelreina/redis-stream-event` (currently v0.9.0).
+This is a TypeScript library for Redis Streams-based event streaming, supporting both Deno and Node.js environments. The package is published to JSR as `@nelreina/redis-stream-event` (currently v0.11.0).
 
 ## Architecture
 
@@ -52,13 +52,9 @@ deno publish
 
 ## Testing
 
-Currently no test files exist. When adding tests:
+Integration tests live in `tests/` and need a local Redis (`REDIS_URL`, default `redis://localhost:6379`):
 ```bash
-# Run tests (when available)
-deno test --allow-net --allow-env
-
-# Run with coverage
-deno test --coverage
+deno task test
 ```
 
 ## Key Implementation Details
