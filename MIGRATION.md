@@ -1,3 +1,50 @@
+# Migration: 0.10.x → 0.11.0
+
+0.11.0 is backwards compatible at the API level: `new RedisEventStream(...)`, `createStream()`,
+`publish()` and `subscribe(handler, filterEvents)` keep their signatures. What changes at runtime:
+
+## Behaviour changes for existing callers
+
+| Area | 0.10.x | 0.11.0 |
+|---|---|---|
+| Start of `subscribe()` | straight into `XREADGROUP … >` | **PEL drain** first: the consumer's own pending entries are re-delivered to the handler (moving cursor from `"0"`, bounded by the XPENDING count), then XAUTOCLAIM, then `>` |
+| Entries delivered more than 5 times | re-read forever (only if something re-read the PEL) | **parked**: copied to `ynohub:parked:<group>` (`MAXLEN ~ 10000`) with `{original fields…, streamKey, group, consumer, entryId, deliveries, reason}`, then XACKed, WARN log |
+| Idle entries of other consumers (≥ 60 s) | stay in the dead consumer's PEL | **claimed** with XAUTOCLAIM at start and every 60 s (fallback XPENDING + XCLAIM below Redis 6.2) and handed to the handler; `message.deliveries` is set |
+| PEL entries whose stream entry was trimmed | stay pending | acked, WARN log |
+| XACK (`message.ack()`, `handler.ack()`) | on the dedicated blocking connection | on the main (non-blocking) client |
+| `createStream()` | created the group **and** the consumer (constructor `consumer`) | creates the group only; `subscribe()` registers the consumer with the effective (per-call) name |
+| `subscribe()` after a fatal error | rejected, dedicated connection stayed open | rejects after cleanup: dedicated connection closed, `running = false` (a later `subscribe()` on the same handler reconnects) |
+| Client requirement | camelCase stream commands | additionally `sendCommand(args)` (node-redis v4/v5) |
+
+Handlers therefore see **at-least-once** delivery for entries that were in flight when a previous
+process died or stopped; make them idempotent or dedupe on `streamKey + streamId`.
+To keep the 0.10.x start behaviour: `subscribe(handler, events, { drain: false, autoClaim: false })`.
+
+## New API
+
+```typescript
+const handler = await es.createStream(key, { startId: "0" });   // group creation id
+const done = handler.subscribe(onMessage, events, {
+  consumer: "yno-routing-1",       // per-call consumer name
+  startId: "0",                    // group creation id (MKSTREAM) if the group is missing
+  blockMs: 5000,
+  drain: { maxDeliveries: 5, parkedStream: "ynohub:parked:yno-routing", batch: 50 },
+  autoClaim: { minIdleMs: 60000, everyMs: 60000, count: 100 },
+});
+handler.running;    // true while the loop runs
+handler.clientId;   // CLIENT ID of the blocking connection
+await handler.stop(); // CLIENT UNBLOCK + wait for the in-flight handler + close connection
+await done;           // resolves on stop, rejects on a fatal loop error
+
+await es.ensureGroup(key, "0");  // also on StreamHandler
+// message.streamKey, message.deliveries (re-deliveries only)
+```
+
+`StreamHandler` and the types `SubscribeOptions`, `DrainOptions`, `AutoClaimOptions`,
+`StreamMessage`, `StreamOptions`, `EventHandler` are now exported.
+
+---
+
 # Migration Guide: v1 to v2
 
 This guide helps you migrate from Redis Event Stream v1 to v2, which includes significant API improvements, better type safety, and new features.
